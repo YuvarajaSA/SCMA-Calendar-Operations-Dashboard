@@ -22,7 +22,7 @@ handle_oauth_callback()
 hydrate_session()
 
 if not is_supabase_authenticated():
-    from pages.login import render as login_page
+    from views.login import render as login_page
     login_page()
     st.stop()
 
@@ -44,15 +44,15 @@ profile = st.session_state.get("_cached_profile")
 status  = st.session_state.get("user_status", "")
 
 if profile is None:
-    from pages.profile import render_setup
+    from views.profile import render_setup
     render_setup(); st.stop()
 
 if status == "pending":
-    from pages.profile import render_pending
+    from views.profile import render_pending
     render_pending(); st.stop()
 
 if status == "rejected":
-    from pages.profile import render_rejected
+    from views.profile import render_rejected
     render_rejected(); st.stop()
 
 if not is_logged_in():
@@ -62,12 +62,12 @@ if not is_logged_in():
     st.stop()
 
 # ── Page imports ──────────────────────────────────────────────
-from pages import (
+from views import (
     dashboard, calendar_view, search,
     add_squad, conflicts, availability, timeline,
     event_manager, csv_upload, profile_settings, admin,
 )
-from pages.add_team import render as add_team_render
+from views.add_team import render as add_team_render
 from db.operations import load_events, load_teams, load_squad
 from utils.conflicts import detect_event_overlaps, detect_player_conflicts
 import streamlit as st
