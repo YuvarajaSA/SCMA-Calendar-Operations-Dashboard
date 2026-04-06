@@ -197,6 +197,55 @@ div[data-testid="stForm"] { background:var(--surface2)!important; border:1px sol
     .gcal-cell { min-height:148px; }
     .gcal-pill { font-size:.72rem; padding:.27rem .52rem; }
 }
+/* ── Nav buttons (sidebar) ─────────────────────────────────── */
+section[data-testid="stSidebar"] .stButton>button {
+    background:transparent !important;
+    color:var(--text-dim) !important;
+    border:1px solid transparent !important;
+    border-radius:7px !important;
+    font-size:.84rem !important;
+    font-weight:500 !important;
+    padding:.42rem .75rem !important;
+    text-align:left !important;
+    justify-content:flex-start !important;
+    transition:background .12s, color .12s !important;
+    letter-spacing:0 !important;
+}
+section[data-testid="stSidebar"] .stButton>button:hover {
+    background:rgba(240,180,41,.08) !important;
+    color:var(--text) !important;
+    transform:none !important;
+    opacity:1 !important;
+}
+
+/* ── Calendar selected cell ─────────────────────────────────── */
+.gcal-cell.gcal-selected {
+    border-color:var(--accent) !important;
+    background:rgba(240,180,41,.06) !important;
+}
+
+/* ── Dividers between sections ──────────────────────────────── */
+.section-divider {
+    height:1px;
+    background:var(--border);
+    margin:1.4rem 0;
+    border:none;
+}
+
+/* ── Consistent form card padding ───────────────────────────── */
+div[data-testid="stForm"] {
+    padding:1.2rem !important;
+}
+
+/* ── Remove excess top padding from block-container ─────────── */
+.block-container { padding-top:1.2rem !important; }
+
+/* ── Tighter page header for compact screens ─────────────────── */
+@media(max-width:1279px) {
+    .page-header h1 { font-size:2rem; }
+    .page-header    { margin-bottom:1.2rem; padding-bottom:.8rem; }
+}
+
 """
 
 

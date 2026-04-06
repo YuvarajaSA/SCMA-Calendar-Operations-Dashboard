@@ -277,14 +277,16 @@ def create_profile(user_id: str, email: str, name: str,
 
 
 def update_profile_details(user_id: str, name: str,
-                           phone: str = "", location: str = "") -> tuple[bool, str]:
-    """Users update ONLY name / phone / location — never status or role."""
+                           phone: str = "", location: str = "",
+                           timezone: str = "UTC") -> tuple[bool, str]:
+    """Users update ONLY name / phone / location / timezone — never status or role."""
     sb = get_client()
     try:
         sb.table("profiles").update({
             "name":     name.strip(),
             "phone":    phone.strip(),
             "location": location.strip(),
+            "timezone": timezone or "UTC",
         }).eq("id", user_id).execute()
         return True, "ok"
     except Exception as e:
@@ -406,14 +408,11 @@ def add_player(player_name: str, country: str = "", role: str = "") -> tuple[boo
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_matches(event_id: int | None = None) -> pd.DataFrame:
+    """Load matches. event_id optional — None returns all (incl. standalones)."""
     try:
         sb = get_client()
-        q  = sb.table("matches").select(
-            "*, events(event_name, gender, category), "
-            "team1:teams!matches_team1_id_fkey(team_name), "
-            "team2:teams!matches_team2_id_fkey(team_name)"
-        ).order("match_date")
-        if event_id:
+        q  = sb.table("matches").select("*").order("match_date")
+        if event_id is not None:
             q = q.eq("event_id", event_id)
         df = pd.DataFrame(q.execute().data or [])
     except Exception:
@@ -421,26 +420,56 @@ def load_matches(event_id: int | None = None) -> pd.DataFrame:
 
     if not df.empty and "match_date" in df.columns:
         df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-        df = df.dropna(subset=["match_date"])
+        df = df.dropna(subset=["match_date"]).reset_index(drop=True)
     return df
 
 
 def add_match(
-    event_id: int, match_name: str, match_date: date,
+    event_id: int | None, match_name: str, match_date: date,
     team1_id: int | None = None, team2_id: int | None = None,
     venue: str = "", notes: str = "",
 ) -> tuple[bool, str]:
+    """event_id is optional — pass None for standalone friendly matches."""
     sb = get_client()
+
+    # Validate event_id if provided
+    if event_id is not None:
+        try:
+            ev_check = sb.table("events").select("id").eq("id", event_id).maybe_single().execute()
+            if not ev_check.data:
+                return False, "Referenced event not found."
+        except Exception as e:
+            return False, f"Event validation failed: {e}"
+
+    # Duplicate check: same date + both teams
+    if team1_id and team2_id and match_date:
+        try:
+            dup = (
+                sb.table("matches")
+                .select("id")
+                .eq("match_date", str(match_date))
+                .eq("team1_id",   team1_id)
+                .eq("team2_id",   team2_id)
+                .maybe_single()
+                .execute()
+            )
+            if dup.data:
+                return False, "A match with these teams on this date already exists."
+        except Exception:
+            pass
+
     try:
-        sb.table("matches").insert({
-            "event_id":   event_id,
+        payload: dict = {
             "match_name": match_name.strip(),
             "match_date": str(match_date),
             "team1_id":   team1_id,
             "team2_id":   team2_id,
             "venue":      venue.strip(),
             "notes":      notes.strip(),
-        }).execute()
+        }
+        if event_id is not None:
+            payload["event_id"] = event_id
+        sb.table("matches").insert(payload).execute()
         load_matches.clear()
         return True, f"Match **{match_name}** added."
     except APIError as e:
@@ -482,16 +511,20 @@ def load_registrations() -> pd.DataFrame:
     return df
 
 
-def add_registration(event_id: int, start_date: date, deadline: date,
+def add_registration(event_id: int | None, start_date: date, deadline: date,
                      notes: str = "", user_id: str | None = None) -> tuple[bool, str]:
+    """event_id optional — supports pre-announcement registration windows."""
+    if start_date > deadline:
+        return False, "Deadline must be on or after start date."
     sb = get_client()
     try:
-        payload = {
-            "event_id":   event_id,
+        payload: dict = {
             "start_date": str(start_date),
             "deadline":   str(deadline),
             "notes":      notes.strip(),
         }
+        if event_id is not None:
+            payload["event_id"] = event_id
         if user_id:
             payload["created_by"] = user_id
         sb.table("registrations").insert(payload).execute()
@@ -520,17 +553,20 @@ def load_auctions() -> pd.DataFrame:
     return df
 
 
-def add_auction(event_id: int, franchise_name: str, auction_date: date,
+def add_auction(event_id: int | None, franchise_name: str, auction_date: date,
                 location: str = "", notes: str = "") -> tuple[bool, str]:
+    """event_id optional — supports auctions not yet linked to a specific event."""
     sb = get_client()
     try:
-        sb.table("auctions").insert({
-            "event_id":       event_id,
+        payload: dict = {
             "franchise_name": franchise_name.strip(),
             "auction_date":   str(auction_date),
             "location":       location.strip(),
             "notes":          notes.strip(),
-        }).execute()
+        }
+        if event_id is not None:
+            payload["event_id"] = event_id
+        sb.table("auctions").insert(payload).execute()
         load_auctions.clear()
         return True, f"Auction for **{franchise_name}** added."
     except APIError as e:
@@ -968,3 +1004,43 @@ def schedule_notifications_for_match(match_row: dict, recipients: list[str]) -> 
             message     = f"Match today: {match_row.get('match_name', 'Match')}",
             scheduled_at= send_at,
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DELETE HELPERS (admin only — enforced by RLS)
+# ═══════════════════════════════════════════════════════════════
+
+def delete_match(match_id: int) -> tuple[bool, str]:
+    sb = get_client()
+    try:
+        sb.table("matches").delete().eq("id", match_id).execute()
+        load_matches.clear()
+        return True, "Match deleted."
+    except APIError as e:
+        return False, str(e)
+
+
+def delete_team(team_id: int) -> tuple[bool, str]:
+    sb = get_client()
+    try:
+        sb.table("teams").delete().eq("id", team_id).execute()
+        load_teams.clear()
+        return True, "Team deleted."
+    except APIError as e:
+        return False, str(e)
+
+
+def delete_squad_entry(squad_id: int) -> tuple[bool, str]:
+    sb = get_client()
+    try:
+        sb.table("squad").delete().eq("id", squad_id).execute()
+        load_squad.clear()
+        return True, "Squad entry deleted."
+    except APIError as e:
+        return False, str(e)
+
+
+def get_user_timezone(user_id: str) -> str:
+    """Return the IANA timezone string for a user, defaulting to UTC."""
+    profile = get_profile(user_id)
+    return (profile or {}).get("timezone", "UTC") or "UTC"
