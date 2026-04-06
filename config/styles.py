@@ -18,7 +18,7 @@ _CSS = """
 }
 
 html,body,[class*="css"] { font-family:'DM Sans',sans-serif; background:var(--bg)!important; color:var(--text)!important; font-size:14px; }
-.main .block-container    { padding:1.5rem 2.5rem 3rem!important; max-width:1700px!important; }
+.main .block-container    { padding:1.5rem 2.5rem 3rem!important; max-width:100% !important; }
 .block-container          { padding-top:1.5rem!important; }
 hr { border-color:var(--border)!important; }
 
@@ -230,6 +230,15 @@ section[data-testid="stSidebar"] .stButton>button:hover {
     background:var(--border);
     margin:1.4rem 0;
     border:none;
+}
+
+section.main > div {
+    width:100% !important;
+}
+
+section[data-testid="stSidebar"] img {
+    margin-top:14px;
+    margin-bottom:8px;
 }
 
 /* ── Consistent form card padding ───────────────────────────── */

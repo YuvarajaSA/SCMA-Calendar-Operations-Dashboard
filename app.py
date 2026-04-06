@@ -74,18 +74,18 @@ import streamlit as st
 
 # ── Navigation structure ──────────────────────────────────────
 NAV_MAIN = [
-    ("Calendar",     "📅", calendar_view.render),
-    ("Dashboard",    "📊", dashboard.render),
-    ("Search",       "🔍", search.render),
-    ("Conflicts",    "⚠",  conflicts.render),
-    ("Availability", "🧑", availability.render),
-    ("Timeline",     "📈", timeline.render),
+    ("Calendar",     "", calendar_view.render),
+    ("Dashboard",    "", dashboard.render),
+    ("Search",       "", search.render),
+    ("Conflicts",    "", conflicts.render),
+    ("Availability", "", availability.render),
+    ("Timeline",     "", timeline.render),
 ]
 NAV_EDIT = [
-    ("Event Manager","➕", event_manager.render),
-    ("Add Team",     "🏟", add_team_render),
-    ("Add Squad",    "👥", add_squad.render),
-    ("CSV Upload",   "📂", csv_upload.render),
+    ("Event Manager","", event_manager.render),
+    ("Add Team",     "", add_team_render),
+    ("Add Squad",    "", add_squad.render),
+    ("CSV Upload",   "", csv_upload.render),
 ]
 NAV_ADMIN = [
     ("Admin",        "🛡", admin.render),
@@ -100,21 +100,24 @@ if "current_page" not in st.session_state:
 
 
 def _nav_btn(label: str, icon: str) -> None:
-    active    = st.session_state["current_page"] == label
+    active = st.session_state["current_page"] == label
+
     btn_style = (
         "background:rgba(240,180,41,.14);color:#f0b429;border:1px solid rgba(240,180,41,.3);"
         if active else
         "background:transparent;color:#c9d1d9;border:1px solid transparent;"
     )
+
+    text = f"{icon}  {label}" if icon else label
+
     if st.button(
-        f"{icon}  {label}",
+        text,
         key=f"nav_{label}",
         use_container_width=True,
         help=label,
     ):
         st.session_state["current_page"] = label
-        st.rerun()
-
+        st.rerun() 
 
 # ── Sidebar ───────────────────────────────────────────────────
 with st.sidebar:
