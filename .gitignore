@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# NEVER commit real secrets
+.streamlit/secrets.toml
+!.streamlit/secrets.toml.example
+
+.DS_Store
+.idea/
+.vscode/
+*.log
