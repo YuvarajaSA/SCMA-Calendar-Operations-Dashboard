@@ -125,7 +125,7 @@ with st.sidebar:
     logo_url = st.secrets.get("supabase", {}).get("logo_url", "")
     if logo_url:
         try:
-            st.image(logo_url, use_container_width=True)
+            st.image(logo_url, width=170)
         except Exception:
             pass
 
