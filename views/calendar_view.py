@@ -198,16 +198,17 @@ def _inline_add_form(selected_day: date, ev_names: list[str]) -> None:
 
     if add_type == "Match":
         with st.form("inline_match_form", clear_on_submit=True):
-            match_name = st.text_input("Match name", value=f"Match on {selected_day}")
-            ev_sel = st.selectbox("Link to event (optional)", ["(none)"] + ev_names)
-            venue  = st.text_input("Venue", placeholder="Optional")
+            match_name  = st.text_input("Match name", value=f"Match on {selected_day}")
+            venue       = st.text_input("Venue", placeholder="Optional")
+            link_event  = st.checkbox("Link to an event", value=False)
+            ev_sel      = st.selectbox("Event", ev_names, key="im_ev") if link_event and ev_names else None
             if st.form_submit_button("Add Match", use_container_width=True):
                 from db.auth import can_edit
                 if not can_edit():
                     st.error("Edit access required.")
                 else:
                     ev_id = None
-                    if ev_sel != "(none)":
+                    if link_event and ev_sel:
                         ev_df = load_events()
                         row = ev_df[ev_df["event_name"] == ev_sel]
                         if not row.empty and "id" in row.columns:
@@ -223,16 +224,17 @@ def _inline_add_form(selected_day: date, ev_names: list[str]) -> None:
 
     elif add_type == "Registration":
         with st.form("inline_reg_form", clear_on_submit=True):
-            ev_sel   = st.selectbox("Link to event (optional)", ["(none)"] + ev_names)
-            deadline = st.date_input("Deadline", value=selected_day)
-            notes    = st.text_input("Notes", placeholder="Optional")
+            deadline   = st.date_input("Deadline", value=selected_day)
+            notes      = st.text_input("Notes", placeholder="Optional")
+            link_event = st.checkbox("Link to an event", value=False)
+            ev_sel     = st.selectbox("Event", ev_names, key="ir_ev") if link_event and ev_names else None
             if st.form_submit_button("Add Registration", use_container_width=True):
                 from db.auth import can_edit
                 if not can_edit():
                     st.error("Edit access required.")
                 else:
                     ev_id = None
-                    if ev_sel != "(none)":
+                    if link_event and ev_sel:
                         ev_df = load_events()
                         row = ev_df[ev_df["event_name"] == ev_sel]
                         if not row.empty and "id" in row.columns:
@@ -248,9 +250,10 @@ def _inline_add_form(selected_day: date, ev_names: list[str]) -> None:
 
     else:  # Auction
         with st.form("inline_auction_form", clear_on_submit=True):
-            franchise = st.text_input("Franchise name", placeholder="e.g. Mumbai Indians")
-            ev_sel    = st.selectbox("Link to event (optional)", ["(none)"] + ev_names)
-            location  = st.text_input("Location", placeholder="Optional")
+            franchise  = st.text_input("Franchise name", placeholder="e.g. Mumbai Indians")
+            location   = st.text_input("Location", placeholder="Optional")
+            link_event = st.checkbox("Link to an event", value=False)
+            ev_sel     = st.selectbox("Event", ev_names, key="ia_ev") if link_event and ev_names else None
             if st.form_submit_button("Add Auction", use_container_width=True):
                 from db.auth import can_edit
                 if not can_edit():
@@ -260,7 +263,7 @@ def _inline_add_form(selected_day: date, ev_names: list[str]) -> None:
                         st.error("Franchise name required.")
                     else:
                         ev_id = None
-                        if ev_sel != "(none)":
+                        if link_event and ev_sel:
                             ev_df = load_events()
                             row = ev_df[ev_df["event_name"] == ev_sel]
                             if not row.empty and "id" in row.columns:
@@ -345,9 +348,9 @@ def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> No
 # ── Filters panel ─────────────────────────────────────────────
 
 def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
-    """Apply search + type + gender + category filters. Returns filtered df."""
+    """Apply search + type + gender + category + client filters."""
     with st.expander("Filters & Search", expanded=False):
-        fc1, fc2, fc3 = st.columns(3)
+        fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
             search_q = st.text_input("Search title", placeholder="Event / match name…", key="cal_search")
             gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"], key="cf_g")
@@ -362,6 +365,17 @@ def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
         with fc3:
             date_from = st.date_input("From date", value=None, key="cf_from")
             date_to   = st.date_input("To date",   value=None, key="cf_to")
+        with fc4:
+            # Phase 5: Client filter — loads clients for filtering
+            try:
+                from db.operations import load_clients
+                clients_df = load_clients()
+                client_opts = ["All clients"] + (
+                    clients_df["full_name"].tolist() if not clients_df.empty and "full_name" in clients_df.columns else []
+                )
+            except Exception:
+                client_opts = ["All clients"]
+            client_f = st.selectbox("Client", client_opts, key="cf_client")
 
     df = all_items.copy() if not all_items.empty else pd.DataFrame()
     if df.empty:
@@ -388,6 +402,20 @@ def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
     if date_to:
         df = df[df["end_date"] <= pd.Timestamp(date_to)]
 
+    # Phase 5: Client filter — only applied if client_id column exists
+    # (populated when calendar items are tagged with client relationships)
+    if client_f != "All clients" and "client_id" in df.columns:
+        try:
+            from db.operations import load_clients
+            clients_df_m = load_clients()
+            if not clients_df_m.empty and "full_name" in clients_df_m.columns and "id" in clients_df_m.columns:
+                match = clients_df_m[clients_df_m["full_name"] == client_f]
+                if not match.empty:
+                    cid = match.iloc[0]["id"]
+                    df = df[df["client_id"] == cid]
+        except Exception:
+            pass  # never crash on filter failure
+
     return df.reset_index(drop=True)
 
 
@@ -412,13 +440,11 @@ def render() -> None:
     user_tz  = _get_user_tz()
     ev_names = event_names()
 
-    # ── Load & filter all items ────────────────────────────────
+    # ── Load raw data (before filters, to get year range) ───────
     try:
         all_items_raw = load_calendar_items()
     except Exception:
         all_items_raw = pd.DataFrame()
-
-    all_items = _render_filters(all_items_raw)
 
     # ── Conflict detection ─────────────────────────────────────
     try:
@@ -432,14 +458,14 @@ def render() -> None:
             if k in o:
                 conflict_ids.add(o[k])
 
-    # ── Year / month nav ───────────────────────────────────────
+    # ── Year / month nav FIRST (Phase 3) ──────────────────────
     today    = date.today()
     year_min = today.year
     year_max = today.year + 2
-    if not all_items.empty:
+    if not all_items_raw.empty:
         try:
-            year_min = min(year_min, int(all_items["start_date"].dt.year.min()))
-            year_max = max(year_max, int(all_items["end_date"].dt.year.max()))
+            year_min = min(year_min, int(all_items_raw["start_date"].dt.year.min()))
+            year_max = max(year_max, int(all_items_raw["end_date"].dt.year.max()))
         except Exception:
             pass
 
@@ -466,6 +492,9 @@ def render() -> None:
             f'<div style="margin-top:1.6rem;">{badge_html}</div>',
             unsafe_allow_html=True,
         )
+
+    # ── Filters below year/month ───────────────────────────────
+    all_items = _render_filters(all_items_raw)
 
     # ── Month slice ────────────────────────────────────────────
     last_day    = calendar.monthrange(sel_year, sel_month)[1]

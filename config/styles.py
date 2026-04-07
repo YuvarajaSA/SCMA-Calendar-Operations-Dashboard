@@ -18,7 +18,8 @@ _CSS = """
 }
 
 html,body,[class*="css"] { font-family:'DM Sans',sans-serif; background:var(--bg)!important; color:var(--text)!important; font-size:14px; }
-.main .block-container    { padding:1.5rem 2.5rem 3rem!important; max-width:100% !important; }
+.main .block-container    { padding:1.5rem 1.5rem 3rem!important; max-width:100%!important; width:100%!important; }
+section.main > div { width:100% !important; }
 .block-container          { padding-top:1.5rem!important; }
 hr { border-color:var(--border)!important; }
 
@@ -175,7 +176,7 @@ div[data-testid="stForm"] { background:var(--surface2)!important; border:1px sol
 
 /* RESPONSIVE */
 @media(max-width:1279px) {
-    .main .block-container { padding:1.2rem 1.4rem 2rem!important; }
+    .main .block-container { padding:1.2rem 1rem 2rem!important; max-width:100%!important; }
     .gcal-cell { min-height:90px; }
     .gcal-pill-meta,.gcal-pill-teams { display:none; }
     .stat-row { flex-wrap:wrap; }
@@ -197,22 +198,23 @@ div[data-testid="stForm"] { background:var(--surface2)!important; border:1px sol
     .gcal-cell { min-height:148px; }
     .gcal-pill { font-size:.72rem; padding:.27rem .52rem; }
 }
-/* ── Nav buttons (sidebar) ─────────────────────────────────── */
+/* ── Nav buttons (sidebar) — Phase 1 ───────────────────────── */
 section[data-testid="stSidebar"] .stButton>button {
     background:transparent !important;
     color:var(--text-dim) !important;
-    border:1px solid transparent !important;
-    border-radius:7px !important;
+    border:none !important;
+    border-radius:6px !important;
     font-size:.84rem !important;
     font-weight:500 !important;
-    padding:.42rem .75rem !important;
+    padding:.35rem .6rem !important;
     text-align:left !important;
     justify-content:flex-start !important;
     transition:background .12s, color .12s !important;
     letter-spacing:0 !important;
+    box-shadow:none !important;
 }
 section[data-testid="stSidebar"] .stButton>button:hover {
-    background:rgba(240,180,41,.08) !important;
+    background:rgba(240,180,41,.06) !important;
     color:var(--text) !important;
     transform:none !important;
     opacity:1 !important;
@@ -230,15 +232,6 @@ section[data-testid="stSidebar"] .stButton>button:hover {
     background:var(--border);
     margin:1.4rem 0;
     border:none;
-}
-
-section.main > div {
-    width:100% !important;
-}
-
-section[data-testid="stSidebar"] img {
-    margin-top:14px;
-    margin-bottom:8px;
 }
 
 /* ── Consistent form card padding ───────────────────────────── */

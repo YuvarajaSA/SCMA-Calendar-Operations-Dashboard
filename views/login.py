@@ -1,6 +1,9 @@
 # pages/login.py  —  SCMA Calendar Dashboard
+# Phase 10: forgot password via Supabase reset_password_for_email()
+
 import streamlit as st
 from db.auth import login_with_password, signup_with_password
+from db.supabase_client import get_client
 
 
 def render() -> None:
@@ -20,24 +23,22 @@ def render() -> None:
     _, mid, _ = st.columns([1, 2, 1])
 
     with mid:
-        # Header card
         st.markdown("""
         <div style="background:#161b22; border:1px solid #30363d; border-radius:16px;
                     padding:2.6rem 2.4rem 2rem; max-width:440px; margin:0 auto;
                     box-shadow:0 8px 40px rgba(0,0,0,.5);">
             <div style="text-align:center; margin-bottom:2rem;">
-                <div style="font-size:2.6rem; line-height:1; margin-bottom:.5rem;">🏏</div>
                 <div style="font-family:'Bebas Neue',sans-serif; font-size:2rem;
                             color:#f0b429; letter-spacing:.06em; line-height:1.1;">
                     SCMA CALENDAR
                 </div>
-                <div style="font-size:.82rem; color:#8b949e; margin-top:.35rem;">
-                    Sophie Agency — Internal Staff Portal
+                <div style="font-size:.78rem; color:#8b949e; margin-top:.3rem;">
+                    Sophie Claire M Agency — Internal Staff Portal
                 </div>
-                <div style="margin-top:.7rem;">
-                    <span style="display:inline-block; padding:.18rem .75rem;
-                        background:rgba(248,81,73,.08); border:1px solid rgba(248,81,73,.22);
-                        border-radius:20px; font-size:.64rem; font-weight:700;
+                <div style="margin-top:.6rem;">
+                    <span style="display:inline-block; padding:.15rem .7rem;
+                        background:rgba(248,81,73,.07); border:1px solid rgba(248,81,73,.2);
+                        border-radius:20px; font-size:.62rem; font-weight:700;
                         letter-spacing:.1em; text-transform:uppercase; color:#f85149;">
                         Restricted Access
                     </span>
@@ -53,8 +54,9 @@ def render() -> None:
                         font-size:.83rem; color:#f85149;">{err}</div>""",
                         unsafe_allow_html=True)
 
-        tab_in, tab_up = st.tabs(["Sign In", "Create Account"])
+        tab_in, tab_up, tab_forgot = st.tabs(["Sign In", "Create Account", "Forgot Password"])
 
+        # ── Sign In ───────────────────────────────────────────
         with tab_in:
             st.markdown("<div style='height:.3rem'></div>", unsafe_allow_html=True)
             email = st.text_input(
@@ -76,6 +78,7 @@ def render() -> None:
                     else:
                         st.error(msg)
 
+        # ── Create Account ────────────────────────────────────
         with tab_up:
             st.caption("New accounts require admin approval before access is granted.")
             email_up = st.text_input(
@@ -107,7 +110,44 @@ def render() -> None:
                     else:
                         st.error(reason)
 
+        # ── Forgot Password ───────────────────────────────────
+        with tab_forgot:
+            st.markdown("<div style='height:.3rem'></div>", unsafe_allow_html=True)
+            st.markdown("""
+            <div style="font-size:.82rem;color:#8b949e;margin-bottom:.8rem;line-height:1.5;">
+                Enter your email address and we'll send you a password reset link
+                via Supabase Auth.
+            </div>""", unsafe_allow_html=True)
+
+            reset_email = st.text_input(
+                "Email address", placeholder="you@sophieagency.com",
+                key="reset_email", label_visibility="collapsed",
+            )
+            if st.button("Send Reset Link", use_container_width=True, key="btn_reset"):
+                if not reset_email.strip():
+                    st.error("Enter your email address.")
+                else:
+                    sb = get_client()
+                    try:
+                        sb.auth.reset_password_for_email(
+                            reset_email.strip(),
+                            options={"redirect_to": ""},
+                        )
+                        st.success(
+                            "If that email exists in our system, a reset link has been sent. "
+                            "Check your inbox."
+                        )
+                        # Log the request (fire-and-forget)
+                        try:
+                            from db.operations import log_activity
+                            log_activity(None, reset_email.strip(),
+                                         "password_reset_request", "auth")
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        st.error(f"Could not send reset email: {e}")
+
         st.markdown("""
-        <div style="text-align:center; margin-top:1.6rem; font-size:.7rem; color:#8b949e;">
+        <div style="text-align:center; margin-top:1.4rem; font-size:.7rem; color:#8b949e;">
             Secured by Supabase Auth &nbsp;·&nbsp; Internal use only
         </div>""", unsafe_allow_html=True)

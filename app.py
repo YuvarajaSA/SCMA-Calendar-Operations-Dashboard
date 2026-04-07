@@ -74,18 +74,19 @@ import streamlit as st
 
 # ── Navigation structure ──────────────────────────────────────
 NAV_MAIN = [
-    ("Calendar",     "", calendar_view.render),
-    ("Dashboard",    "", dashboard.render),
-    ("Search",       "", search.render),
-    ("Conflicts",    "", conflicts.render),
-    ("Availability", "", availability.render),
-    ("Timeline",     "", timeline.render),
+    ("Calendar",     "📅", calendar_view.render),
+    ("Dashboard",    "📊", dashboard.render),
+    ("Search",       "🔍", search.render),
+    ("Conflicts",    "⚠",  conflicts.render),
+    ("Availability", "🧑", availability.render),
+    ("Timeline",     "📈", timeline.render),
 ]
 NAV_EDIT = [
-    ("Event Manager","", event_manager.render),
-    ("Add Team",     "", add_team_render),
-    ("Add Squad",    "", add_squad.render),
-    ("CSV Upload",   "", csv_upload.render),
+    ("Event Manager","➕", event_manager.render),
+    ("Add Team",     "🏟", add_team_render),
+    ("Add Squad",    "👥", add_squad.render),
+    ("Clients",      "👤", None),   # lazy import below
+    ("CSV Upload",   "📂", csv_upload.render),
 ]
 NAV_ADMIN = [
     ("Admin",        "🛡", admin.render),
@@ -100,24 +101,21 @@ if "current_page" not in st.session_state:
 
 
 def _nav_btn(label: str, icon: str) -> None:
-    active = st.session_state["current_page"] == label
-
+    active    = st.session_state["current_page"] == label
     btn_style = (
         "background:rgba(240,180,41,.14);color:#f0b429;border:1px solid rgba(240,180,41,.3);"
         if active else
         "background:transparent;color:#c9d1d9;border:1px solid transparent;"
     )
-
-    text = f"{icon}  {label}" if icon else label
-
     if st.button(
-        text,
+        f"{icon}  {label}",
         key=f"nav_{label}",
         use_container_width=True,
         help=label,
     ):
         st.session_state["current_page"] = label
-        st.rerun() 
+        st.rerun()
+
 
 # ── Sidebar ───────────────────────────────────────────────────
 with st.sidebar:
@@ -125,7 +123,7 @@ with st.sidebar:
     logo_url = st.secrets.get("supabase", {}).get("logo_url", "")
     if logo_url:
         try:
-            st.image(logo_url, width=170)
+            st.image(logo_url, width=95)
         except Exception:
             pass
 
@@ -191,7 +189,6 @@ with st.sidebar:
             _nav_btn(label, icon)
 
     # Quick stats
-    st.markdown("---")
     events_df = load_events()
     teams_df  = load_teams()
     squad_df  = load_squad()
@@ -226,12 +223,10 @@ with st.sidebar:
     </div>""", unsafe_allow_html=True)
 
     # Bottom nav: Profile + Logout
-    st.markdown("---")
+    st.markdown('<div style="height:.5rem"></div>', unsafe_allow_html=True)
     for label, icon, _ in NAV_BOTTOM:
         _nav_btn(label, icon)
 
-    if st.button("Log Out", use_container_width=True, key="logout_btn"):
-        logout(); st.rerun()
 
     st.markdown("""
     <div style="font-size:.57rem;color:#8b949e;margin-top:.5rem;
@@ -243,11 +238,20 @@ with st.sidebar:
 # ── Route to active page ──────────────────────────────────────
 current = st.session_state.get("current_page", "Calendar")
 
+# Build routes — lazy-import Clients to avoid circular deps at startup
 ALL_ROUTES: dict = {}
-for label, _, fn in NAV_MAIN + NAV_EDIT + NAV_ADMIN + NAV_BOTTOM:
+for label, _, fn in NAV_MAIN + NAV_ADMIN + NAV_BOTTOM:
     ALL_ROUTES[label] = fn
+for label, _, fn in NAV_EDIT:
+    if fn is not None:
+        ALL_ROUTES[label] = fn
+    elif label == "Clients":
+        pass  # resolved below
 
-if current in ALL_ROUTES:
+if current == "Clients":
+    from views import clients as clients_page
+    clients_page.render()
+elif current in ALL_ROUTES:
     ALL_ROUTES[current]()
 else:
     calendar_view.render()

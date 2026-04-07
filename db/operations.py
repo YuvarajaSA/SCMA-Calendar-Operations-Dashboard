@@ -1044,3 +1044,166 @@ def get_user_timezone(user_id: str) -> str:
     """Return the IANA timezone string for a user, defaulting to UTC."""
     profile = get_profile(user_id)
     return (profile or {}).get("timezone", "UTC") or "UTC"
+
+
+# ═══════════════════════════════════════════════════════════════
+#  CLIENTS (public data)
+# ═══════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_clients() -> pd.DataFrame:
+    try:
+        sb   = get_client()
+        resp = sb.table("clients").select("*").order("full_name").execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def add_client_full(
+    full_name: str, first_name: str, last_name: str,
+    dob, citizenship: str, client_type: str,
+    player_role: str = "", batting_style: str = "",
+    bowling_style: str = "", shirt_number: str = "",
+    espn_link: str = "",
+    # Sensitive fields
+    email: str = "", phone: str = "",
+    passport_number: str = "", passport_expiry=None,
+    visa_details: str = "", departure_airport: str = "",
+) -> tuple[bool, str]:
+    """
+    Insert client (public) + sensitive record in one transaction.
+    Returns (success, message).
+    Editors can INSERT but the RLS policy prevents them reading
+    sensitive data back after saving.
+    """
+    sb = get_client()
+
+    # Duplicate check: full_name + dob
+    try:
+        dup = (
+            sb.table("clients")
+            .select("id")
+            .eq("full_name", full_name.strip())
+            .maybe_single()
+            .execute()
+        )
+        if dup.data:
+            if dob:
+                dup2 = (
+                    sb.table("clients")
+                    .select("id")
+                    .eq("full_name", full_name.strip())
+                    .eq("dob", str(dob))
+                    .maybe_single()
+                    .execute()
+                )
+                if dup2.data:
+                    return False, f"Client **{full_name}** with this date of birth already exists."
+    except Exception:
+        pass
+
+    try:
+        resp = sb.table("clients").insert({
+            "full_name":     full_name.strip(),
+            "first_name":    first_name.strip(),
+            "last_name":     last_name.strip(),
+            "dob":           str(dob) if dob else None,
+            "citizenship":   citizenship.strip(),
+            "client_type":   client_type,
+            "player_role":   player_role.strip(),
+            "batting_style": batting_style.strip(),
+            "bowling_style": bowling_style.strip(),
+            "shirt_number":  shirt_number.strip(),
+            "espn_link":     espn_link.strip(),
+        }).execute()
+        client_id = resp.data[0]["id"] if resp.data else None
+    except APIError as e:
+        if "23505" in str(e) or "unique" in str(e).lower():
+            return False, f"Client **{full_name}** already exists."
+        return False, f"DB error: {e}"
+    except Exception as e:
+        return False, f"Error saving client: {e}"
+
+    if client_id is None:
+        return False, "Client saved but ID not returned."
+
+    # Insert sensitive record (may fail for non-admin but insert is allowed)
+    has_sensitive = any([
+        email, phone, passport_number, passport_expiry,
+        visa_details, departure_airport,
+    ])
+    if has_sensitive:
+        try:
+            sb.table("client_sensitive").insert({
+                "client_id":          client_id,
+                "email":              email.strip(),
+                "phone":              phone.strip(),
+                "passport_number":    passport_number.strip(),
+                "passport_expiry":    str(passport_expiry) if passport_expiry else None,
+                "visa_details":       visa_details.strip(),
+                "departure_airport":  departure_airport.strip(),
+            }).execute()
+        except Exception as e:
+            # Client public record was saved — note the partial failure
+            load_clients.clear()
+            return True, f"Client saved (ID {client_id}), but sensitive data failed: {e}"
+
+    load_clients.clear()
+    return True, f"Client **{full_name}** added successfully."
+
+
+def load_client_sensitive(client_id: int) -> dict | None:
+    """
+    Admin-only. Role is checked in Python BEFORE the DB query is issued.
+    RLS provides a second layer of enforcement.
+    Returns None if caller is not admin or record not found.
+    """
+    # Python-level gate — never issue the query for non-admins
+    from db.auth import is_admin as _is_admin
+    if not _is_admin():
+        return None
+
+    sb = get_client()
+    try:
+        resp = (
+            sb.table("client_sensitive")
+            .select("*")
+            .eq("client_id", client_id)
+            .maybe_single()
+            .execute()
+        )
+        return resp.data
+    except Exception:
+        return None
+
+
+def bulk_add_clients(rows: list[dict]) -> tuple[int, list[str]]:
+    """
+    rows: list of dicts with public client fields.
+    Sensitive fields not supported in bulk upload.
+    """
+    success, warns = 0, []
+    for r in rows:
+        full = r.get("full_name","").strip()
+        if not full:
+            warns.append("Row skipped: full_name is empty.")
+            continue
+        ok, msg = add_client_full(
+            full_name    = full,
+            first_name   = r.get("first_name",""),
+            last_name    = r.get("last_name",""),
+            dob          = r.get("dob"),
+            citizenship  = r.get("citizenship",""),
+            client_type  = r.get("client_type","Player"),
+            player_role  = r.get("player_role",""),
+            batting_style= r.get("batting_style",""),
+            bowling_style= r.get("bowling_style",""),
+            shirt_number = r.get("shirt_number",""),
+            espn_link    = r.get("espn_link",""),
+        )
+        if ok:
+            success += 1
+        else:
+            warns.append(f"{full}: {msg}")
+    return success, warns
