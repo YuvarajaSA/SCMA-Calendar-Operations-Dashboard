@@ -1,7 +1,3 @@
-
-
-
-
 # pages/calendar_view.py  —  SCMA Multi-Entity Calendar
 # Phase 2: events + matches + registrations + auctions
 # Crash-proof (no KeyError), timezone-aware, filters, inline add
@@ -172,6 +168,7 @@ def _legend_html() -> str:
     ) + '</div>'
 
 
+# ── Inline Add Form ───────────────────────────────────────────
 
 def _inline_add_form(selected_day: date) -> None:
     st.markdown(f"""
@@ -197,7 +194,6 @@ def _inline_add_form(selected_day: date) -> None:
     link_event = st.checkbox("Link to an event", value=False, key="ia_link_ev")
     ev_id = None
     if link_event:
-        # Streamlit's selectbox allows typing to search automatically
         ev_sel = st.selectbox("Select Event", list(event_options.keys()), key=f"ia_ev_{add_type}")
         ev_id = event_options[ev_sel]
 
@@ -264,6 +260,8 @@ def _inline_add_form(selected_day: date) -> None:
     if st.button("Cancel", key="cancel_inline"):
         st.session_state.pop("cal_selected_day", None)
         st.rerun()
+
+
 # ── Detail panel ──────────────────────────────────────────────
 
 def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> None:
