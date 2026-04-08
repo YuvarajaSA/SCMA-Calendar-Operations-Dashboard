@@ -15,6 +15,8 @@ _CSS = """
     --col-intl:#1a6fb5; --col-intl-txt:#a8d4ff;
     --col-dom:#1a6b3a;  --col-dom-txt:#a8ffcc;
     --col-lg:#6b3a7a;   --col-lg-txt:#e8b8ff;
+    --active:#ff4d4f;        /* strong but controlled red */
+    --active-bg:rgba(255,77,79,.15);
 }
 
 html,body,[class*="css"] { font-family:'DM Sans',sans-serif; background:var(--bg)!important; color:var(--text)!important; font-size:14px; }
@@ -221,15 +223,17 @@ section[data-testid="stSidebar"] .stButton>button:hover {
     opacity:1 !important;
 }
 /* Active page — primary button type */
+
 section[data-testid="stSidebar"] .stButton>button[kind="primary"] {
-    background:rgba(240,180,41,.12) !important;
-    color:var(--accent) !important;
-    border-left:2px solid var(--accent) !important;
+    background:var(--active-bg) !important;
+    color:var(--active) !important;
+    border-left:3px solid var(--active) !important;
     border-radius:0 6px 6px 0 !important;
     font-weight:700 !important;
 }
+
 section[data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {
-    background:rgba(240,180,41,.18) !important;
+    background:rgba(255,77,79,.22) !important;
 }
 
 /* ── Calendar selected cell ─────────────────────────────────── */
