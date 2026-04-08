@@ -60,7 +60,7 @@ def render() -> None:
         with tab_in:
             st.markdown("<div style='height:.3rem'></div>", unsafe_allow_html=True)
             email = st.text_input(
-                "Email", placeholder="you@sophieagency.com",
+                "Email", placeholder="you@sophieclairem.com",
                 key="si_email", label_visibility="collapsed",
             )
             password = st.text_input(
@@ -82,7 +82,7 @@ def render() -> None:
         with tab_up:
             st.caption("New accounts require admin approval before access is granted.")
             email_up = st.text_input(
-                "Email", placeholder="you@sophieagency.com",
+                "Email", placeholder="you@sophieclairem.com",
                 key="su_email", label_visibility="collapsed",
             )
             pass_up = st.text_input(
