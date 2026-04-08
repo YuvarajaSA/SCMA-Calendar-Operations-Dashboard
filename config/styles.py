@@ -77,8 +77,24 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover { b
 .p3 { background:var(--blue);color:#0d1117; }
 
 /* RIGHT DETAIL PANEL */
-.detail-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:1.2rem; position:sticky; top:1rem; }
-.detail-panel-title { font-family:'Bebas Neue',sans-serif; font-size:1.1rem; letter-spacing:.06em; color:var(--accent); margin-bottom:1rem; padding-bottom:.6rem; border-bottom:1px solid var(--border); }
+.detail-panel { 
+    background:transparent; /* Removed surface background */
+    border:none;            /* Removed border */
+    border-radius:0;        /* Removed radius */
+    padding:0;              /* Removed padding to align directly with col */
+    box-shadow:none;        /* Removed shadow */
+    position:sticky; 
+    top:1rem; 
+}
+.detail-panel-title { 
+    font-family:'Bebas Neue',sans-serif; 
+    font-size:1.1rem; 
+    letter-spacing:.06em; 
+    color:var(--accent); 
+    margin-bottom:1rem; 
+    padding-bottom:.6rem; 
+    border-bottom:1px solid var(--border); 
+}
 .detail-row { display:flex; justify-content:space-between; align-items:flex-start; padding:.4rem 0; border-bottom:1px solid rgba(48,54,61,.5); font-size:.84rem; }
 .detail-row:last-child { border-bottom:none; }
 .detail-label { color:var(--muted); font-size:.78rem; font-weight:600; flex-shrink:0; margin-right:.6rem; }
@@ -102,7 +118,7 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover { b
 .gcal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
 
 /* Calendar cells — desktop-first height */
-.gcal-cell { background:var(--surface); border:1px solid var(--border); border-radius:6px; min-height:125px; padding:.35rem .42rem; overflow:hidden; transition:border-color .12s,background .12s; cursor:pointer; }
+.gcal-cell { background:var(--surface); border:1px solid var(--border); border-radius:6px; min-height:100px; padding:.25rem .3rem; overflow:hidden; transition:border-color .12s,background .12s; cursor:pointer; }
 .gcal-cell:hover { border-color:var(--border2); background:var(--surface2); }
 .gcal-cell.gcal-today   { border-color:var(--accent)!important; background:rgba(240,180,41,.04); }
 .gcal-cell.gcal-other   { background:var(--bg); opacity:.52; }
@@ -195,7 +211,7 @@ div[data-testid="stForm"] { background:var(--surface2)!important; border:1px sol
     .detail-panel { position:static; }
 }
 @media(min-width:1600px) {
-    .gcal-cell { min-height:148px; }
+    .gcal-cell { min-height:115px; }
     .gcal-pill { font-size:.72rem; padding:.27rem .52rem; }
 }
 /* ── Nav buttons (sidebar) — Phase 1 ───────────────────────── */
