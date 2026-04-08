@@ -350,28 +350,32 @@ def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> No
 def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
     """Apply search + type + gender + category + client filters."""
     with st.expander("Filters & Search", expanded=False):
-        fc1, fc2, fc3, fc4 = st.columns(4)
+        # Issue 13: 2×2 grid so category never wraps
+        fc1, fc2 = st.columns(2)
         with fc1:
             search_q = st.text_input("Search title", placeholder="Event / match name…", key="cal_search")
-            gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"], key="cf_g")
-        with fc2:
             type_f = st.multiselect(
                 "Item types",
                 ["event","match","registration","auction"],
                 default=["event","match","registration","auction"],
                 key="cf_types",
             )
+        with fc2:
+            gender_f   = st.selectbox("Gender",   ["All","Male","Female","Mixed"], key="cf_g")
             category_f = st.selectbox("Category", ["All","International","Domestic","League"], key="cf_cat")
+
+        fc3, fc4 = st.columns(2)
         with fc3:
             date_from = st.date_input("From date", value=None, key="cf_from")
             date_to   = st.date_input("To date",   value=None, key="cf_to")
         with fc4:
-            # Phase 5: Client filter — loads clients for filtering
+            # Phase 5: Client filter — crash-safe, only applied if client_id column exists
             try:
                 from db.operations import load_clients
                 clients_df = load_clients()
                 client_opts = ["All clients"] + (
-                    clients_df["full_name"].tolist() if not clients_df.empty and "full_name" in clients_df.columns else []
+                    clients_df["full_name"].tolist()
+                    if not clients_df.empty and "full_name" in clients_df.columns else []
                 )
             except Exception:
                 client_opts = ["All clients"]
@@ -514,20 +518,70 @@ def render() -> None:
     # ── Selected day (for inline add) ─────────────────────────
     selected_day: date | None = st.session_state.get("cal_selected_day")
 
-    # ── Day picker for adding items ────────────────────────────
+    # ── Quick Add modal trigger (Issue 2) ─────────────────────
     from db.auth import can_edit as _can_edit
     if _can_edit():
-        with st.expander("Add item on a specific date", expanded=(selected_day is not None)):
-            pick_col, _ = st.columns([1, 2])
-            with pick_col:
-                pick_date = st.date_input(
-                    "Select date",
-                    value=selected_day or today,
-                    key="cal_pick_date",
-                )
-            if st.button("Open Quick Add", key="open_inline"):
-                st.session_state["cal_selected_day"] = pick_date
+        qa_col, _ = st.columns([1, 5])
+        with qa_col:
+            if st.button("Quick Add", key="open_modal", use_container_width=True):
+                st.session_state["show_modal"] = True
+                st.session_state["cal_selected_day"] = today
                 st.rerun()
+
+    # ── Modal overlay ─────────────────────────────────────────
+    if st.session_state.get("show_modal") and _can_edit():
+        st.markdown("""
+        <div style="position:fixed;top:0;left:0;width:100%;height:100%;
+                    background:rgba(0,0,0,.55);z-index:999;pointer-events:none;"></div>
+        """, unsafe_allow_html=True)
+        with st.container():
+            st.markdown("""
+            <div style="background:#161b22;border:1px solid #30363d;border-radius:14px;
+                        padding:1.4rem 1.6rem;max-width:540px;margin:.5rem auto;
+                        box-shadow:0 12px 48px rgba(0,0,0,.7);position:relative;z-index:1000;">
+            </div>""", unsafe_allow_html=True)
+
+            st.markdown("**Quick Add**")
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                pick_date = st.date_input("Date", value=today, key="cal_pick_date")
+            with mc2:
+                add_type = st.selectbox("Type", ["Match","Registration","Auction"], key="modal_type")
+
+            # Event linking optional (Issues 3/4)
+            link_event = st.checkbox("Link to an event", value=False, key="modal_link")
+            ev_id_m, ev_name_m = None, None
+            if link_event and ev_names:
+                ev_sel_m = st.selectbox("Select event", ev_names, key="modal_ev")
+                ev_df_m  = load_events()
+                row_m    = ev_df_m[ev_df_m["event_name"] == ev_sel_m] if not ev_df_m.empty else None
+                if row_m is not None and not row_m.empty and "id" in row_m.columns:
+                    ev_id_m   = int(row_m.iloc[0]["id"])
+                    ev_name_m = ev_sel_m
+
+            mc3, mc4 = st.columns(2)
+            with mc3:
+                if st.button("Cancel", key="modal_cancel", use_container_width=True):
+                    st.session_state.pop("show_modal", None)
+                    st.session_state.pop("cal_selected_day", None)
+                    st.rerun()
+            with mc4:
+                confirm_add = st.button("Add", key="modal_add", use_container_width=True)
+
+            if confirm_add:
+                ok, msg = False, "Nothing to add."
+                if add_type == "Match":
+                    ok, msg = add_match(ev_id_m, f"Match on {pick_date}", pick_date)
+                elif add_type == "Registration":
+                    ok, msg = add_registration(ev_id_m, pick_date, pick_date)
+                else:
+                    ok, msg = add_auction(ev_id_m, "TBD", pick_date)
+                if ok:
+                    st.success(msg)
+                    st.session_state.pop("show_modal", None)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     # ── Two-column layout ──────────────────────────────────────
     cal_col, panel_col = st.columns([4, 1], gap="medium")
@@ -547,10 +601,7 @@ def render() -> None:
         )
         st.markdown(_legend_html(), unsafe_allow_html=True)
 
-        # Inline add form
-        if selected_day and _can_edit():
-            st.markdown("---")
-            _inline_add_form(selected_day, ev_names)
+        # (inline add form replaced by modal — see Quick Add button above)
 
     with panel_col:
         st.markdown('<div class="detail-panel">', unsafe_allow_html=True)
