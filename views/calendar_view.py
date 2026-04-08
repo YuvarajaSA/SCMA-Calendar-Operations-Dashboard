@@ -313,7 +313,7 @@ def render() -> None:
         sel_month = st.selectbox("Month", list(range(1, 13)), index=today.month - 1, format_func=lambda m: MONTHS[m], key="cal_mo", label_visibility="collapsed")
 
     with c_filt:
-        with st.popover("⚙️ Filters", use_container_width=True):
+        with st.popover("Filters", use_container_width=True):
             type_f = st.multiselect("Item types", ["event","match","registration","auction"], default=["event","match","registration","auction"])
             category_f = st.selectbox("Category", ["All","International","Domestic","League"])
             gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"])
@@ -324,7 +324,7 @@ def render() -> None:
         from db.auth import can_edit as _can_edit
         if _can_edit():
             # Quick Add as a Popover Menu
-            with st.popover("➕ Quick Add", use_container_width=True):
+            with st.popover("Quick Add", use_container_width=True):
                 st.markdown("**Quick Add**")
                 
                 # Default date from clicked calendar cell, or today
