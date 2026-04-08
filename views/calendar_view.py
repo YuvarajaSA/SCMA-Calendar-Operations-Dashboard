@@ -1,294 +1,490 @@
 # pages/calendar_view.py  —  SCMA Multi-Entity Calendar
 # Phase 2: events + matches + registrations + auctions
 # Crash-proof (no KeyError), timezone-aware, filters, inline add
-# pages/event_manager.py  —  SCMA Event & Match Management
+
 from __future__ import annotations
 
+import calendar
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, timezone as tz
 
-from db.auth import can_edit, get_supabase_user, current_email
 from db.operations import (
-    load_events, load_teams, event_names, teams_for_event,
-    add_event, load_leagues, add_league,
-    add_match, load_matches,
-    add_registration, load_registrations,
-    add_auction, load_auctions,
-    log_activity,
+    load_events, load_calendar_items,
+    load_teams, teams_for_event, event_names,
+    add_match, add_registration, add_auction,
+    load_matches, load_registrations, load_auctions,
 )
+from utils.conflicts import detect_event_overlaps
+
+# ── Constants ─────────────────────────────────────────────────
+MONTHS  = ["","January","February","March","April","May","June",
+           "July","August","September","October","November","December"]
+DOW     = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+WEEKEND = {5, 6}
+
+TYPE_CSS = {
+    "event":        "pill-intl",
+    "match":        "pill-match",
+    "registration": "pill-reg",
+    "auction":      "pill-auction",
+}
+TYPE_BADGE = {
+    "event":        "badge-intl",
+    "match":        "badge-green",
+    "registration": "badge-yellow",
+    "auction":      "badge-purple",
+}
+
+SCMA_TIMEZONES = [
+    "UTC", "Europe/London", "Europe/Paris", "Asia/Kolkata", "Asia/Colombo",
+    "Asia/Dubai", "Asia/Karachi", "Asia/Dhaka", "Asia/Singapore", "Asia/Tokyo",
+    "Australia/Sydney", "Pacific/Auckland", "America/Guyana",
+    "America/Port_of_Spain", "America/St_Lucia", "America/New_York",
+    "America/Los_Angeles", "Africa/Johannesburg",
+]
 
 
-def _event_search_select(key: str) -> tuple[int | None, str]:
-    """Searchable dropdown for event selection. Returns (event_id, event_name)."""
-    ev_df = load_events()
-    
+# ── Timezone helper ────────────────────────────────────────────
+
+def _to_user_tz(dt: datetime | pd.Timestamp, tz_str: str) -> datetime:
+    """Convert UTC datetime to user's local timezone."""
+    try:
+        import pytz
+        user_tz = pytz.timezone(tz_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz.utc)
+        return dt.astimezone(user_tz)
+    except Exception:
+        return dt
+
+
+def _get_user_tz() -> str:
+    from db.auth import get_supabase_user
+    from db.operations import get_profile
+    user = get_supabase_user()
+    if not user:
+        return "UTC"
+    profile = get_profile(user.id)
+    return (profile or {}).get("timezone", "UTC") or "UTC"
+
+
+# ── Calendar grid helpers ──────────────────────────────────────
+
+def _safe_on_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
+    """Return rows active on day d. Never raises KeyError."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "start_date" not in df.columns or "end_date" not in df.columns:
+        return pd.DataFrame()
+    ts = pd.Timestamp(d)
+    try:
+        return df[
+            (df["start_date"] <= ts) & (df["end_date"] >= ts)
+        ].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _pill_html(row: pd.Series, conflict_ids: set) -> str:
+    itype  = row.get("type", "event")
+    css    = TYPE_CSS.get(itype, "pill-intl")
+    title  = str(row.get("title", ""))
+    short  = (title[:22] + "…") if len(title) > 24 else title
+    flag   = " ⚠" if (itype == "event" and row.get("id") in conflict_ids) else ""
+    return (
+        f'<span class="gcal-pill {css}" title="{title.replace(chr(34),chr(39))}">'
+        f'<div class="gcal-pill-name">{short}{flag}</div>'
+        f'</span>'
+    )
+
+
+def _build_grid(
+    year: int, month: int,
+    df: pd.DataFrame,
+    conflict_ids: set,
+    selected_day: date | None,
+) -> str:
+    today = date.today()
+    grid  = calendar.monthcalendar(year, month)
+    dow_html = "".join(
+        f'<div class="gcal-dow-cell{"  weekend" if i in WEEKEND else ""}">{d}</div>'
+        for i, d in enumerate(DOW)
+    )
+    cells = ""
+    for week in grid:
+        for wi, day_num in enumerate(week):
+            if day_num == 0:
+                cells += '<div class="gcal-cell gcal-other"></div>'
+                continue
+            d   = date(year, month, day_num)
+            evs = _safe_on_day(df, d)
+
+            css = "gcal-cell"
+            if d == today:          css += " gcal-today"
+            if wi in WEEKEND:       css += " gcal-weekend"
+            if d == selected_day:   css += " gcal-selected"
+            if not evs.empty and any(
+                r.get("type") == "event" and r.get("id") in conflict_ids
+                for _, r in evs.iterrows()
+            ):
+                css += " has-conflict"
+
+            day_num_html = (
+                f'<div class="gcal-day-num">'
+                f'<span class="gcal-today-circle">{day_num}</span></div>'
+                if d == today else
+                f'<div class="gcal-day-num">{day_num}</div>'
+            )
+            pills = ""
+            total = len(evs)
+            for i, (_, row) in enumerate(evs.iterrows()):
+                if i >= 3:
+                    pills += f'<span class="gcal-more">+{total - 3} more</span>'
+                    break
+                pills += _pill_html(row, conflict_ids)
+
+            cells += f'<div class="{css}">{day_num_html}{pills}</div>'
+
+    return (
+        f'<div class="gcal-wrapper">'
+        f'<div class="gcal-dow-row">{dow_html}</div>'
+        f'<div class="gcal-grid">{cells}</div>'
+        f'</div>'
+    )
+
+
+def _legend_html() -> str:
+    items = [
+        ("rgba(26,111,181,.85)",  "Event / Tournament"),
+        ("rgba(63,185,80,.82)",   "Match"),
+        ("rgba(240,180,41,.82)",  "Registration"),
+        ("rgba(188,140,255,.82)", "Auction"),
+    ]
+    return '<div class="gcal-legend">' + "".join(
+        f'<div class="gcal-legend-item">'
+        f'<div class="gcal-legend-dot" style="background:{c};"></div>{l}</div>'
+        for c, l in items
+    ) + '</div>'
+
+
+# ── Inline Add Form ───────────────────────────────────────────
+
+def _inline_add_form(selected_day: date) -> None:
+    st.markdown(f"""
+    <div style="background:#1c2128;border:1px solid #30363d;border-radius:10px;
+                padding:1rem 1.2rem;margin-bottom:1rem;">
+        <div style="font-size:.72rem;font-weight:700;letter-spacing:.1em;
+                    text-transform:uppercase;color:#f0b429;margin-bottom:.7rem;">
+            Quick Add — {selected_day}
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    add_type = st.selectbox("What to add", ["Match","Registration","Auction"],
+                             key="inline_type", label_visibility="collapsed")
+
     # Build smart dropdown options mapping {"Event Name": id, "(None)": None}
+    ev_df = load_events()
     event_options = {"(None)": None}
     if not ev_df.empty and "event_name" in ev_df.columns and "id" in ev_df.columns:
         for _, r in ev_df.iterrows():
             event_options[r["event_name"]] = int(r["id"])
 
-    # If no events exist in the database, warn the user cleanly
-    if len(event_options) == 1:
-        st.warning("No events found. Add a Tournament/Series first.")
-        return None, ""
-
-    # Native Streamlit selectbox (allows typing to search automatically)
-    sel_name = st.selectbox("Select Event", list(event_options.keys()), key=f"es_{key}")
-    
-    # Handle the empty/None selection
-    if sel_name == "(None)":
-        return None, ""
-        
-    ev_id = event_options[sel_name]
-    return ev_id, sel_name
-
-
-def _tab_tournament() -> None:
-    st.markdown('<div class="card-title">ADD TOURNAMENT / SERIES</div>', unsafe_allow_html=True)
-
-    leagues_df = load_leagues()
-    league_options = {"(None)": None}
-    if not leagues_df.empty:
-        league_options.update({r["league_name"]: int(r["id"]) for _, r in leagues_df.iterrows()})
-
-    with st.form("add_event_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            ev_name     = st.text_input("Event Name *", placeholder="ICC T20 World Cup 2026")
-            ev_type     = st.selectbox("Type *", ["tournament","series"])
-            ev_category = st.selectbox("Category *", ["International","Domestic","League"])
-            ev_league   = st.selectbox("League", list(league_options.keys()))
-        with c2:
-            ev_country  = st.text_input("Country / Host *", placeholder="India")
-            ev_gender   = st.selectbox("Gender *", ["Male","Female","Mixed"])
-            ev_format   = st.selectbox("Format *", ["T20","ODI","Test","The Hundred","Mixed","Other"])
-
-        c3, c4 = st.columns(2)
-        with c3:
-            ev_start = st.date_input("Start Date *", value=date.today())
-        with c4:
-            ev_end   = st.date_input("End Date *",   value=date.today())
-        ev_notes = st.text_area("Notes", placeholder="Optional details…")
-        submitted = st.form_submit_button("Add Event", use_container_width=True)
-
-    if submitted:
-        errs = []
-        if not ev_name.strip():   errs.append("Event name required.")
-        if not ev_country.strip(): errs.append("Country required.")
-        if ev_start > ev_end:     errs.append("Start must be before End.")
-        if errs:
-            for e in errs: st.error(e)
-        else:
-            u = get_supabase_user()
-            ok, msg = add_event(
-                ev_name.strip(), ev_type, ev_category, ev_format,
-                ev_start, ev_end, ev_country.strip(), ev_gender,
-                ev_notes.strip(), user_id=u.id if u else None,
-            )
-            if ok:
-                st.success(msg)
-                log_activity(u.id if u else None, current_email(), "create", "event", details={"name": ev_name})
-            else:
-                st.error(msg)
-
-    # ── Quick add league ──────────────────────────────────────
-    with st.expander("Add a new League"):
-        with st.form("add_league_form", clear_on_submit=True):
-            lg_name    = st.text_input("League Name", placeholder="IPL")
-            lg_country = st.text_input("Country",     placeholder="India")
-            if st.form_submit_button("Add League"):
-                if lg_name.strip():
-                    ok, msg = add_league(lg_name.strip(), lg_country.strip())
-                    if ok: st.success(msg)
-                    else:  st.error(msg)
-
-    # ── Existing events ───────────────────────────────────────
-    ev_df = load_events()
-    if not ev_df.empty:
-        st.markdown('<br><div class="card-title">EXISTING EVENTS</div>', unsafe_allow_html=True)
-        disp = ev_df[["event_name","event_type","category","format","start_date","end_date","country","gender"]].copy()
-        disp["start_date"] = disp["start_date"].dt.date
-        disp["end_date"]   = disp["end_date"].dt.date
-        disp.columns = ["Event","Type","Category","Format","Start","End","Country","Gender"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-
-def _tab_matches() -> None:
-    st.markdown('<div class="card-title">ADD MATCH</div>', unsafe_allow_html=True)
-
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="match_link_ev")
-    ev_id, ev_name = None, None
-    teams, team_ids = [], {}
-
+    # Event linking MUST be outside st.form for dynamic selection to work
+    link_event = st.checkbox("Link to an event", value=False, key="ia_link_ev")
+    ev_id = None
     if link_event:
-        ev_id, ev_name = _event_search_select("match")
-        if ev_id is not None:
-            teams_df = load_teams()
-            if not teams_df.empty and "event_name" in teams_df.columns:
-                ev_teams = teams_df[teams_df["event_name"] == ev_name]
-                if not ev_teams.empty and "id" in ev_teams.columns:
-                    team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
-            teams = list(team_ids.keys())
+        ev_sel = st.selectbox("Select Event", list(event_options.keys()), key=f"ia_ev_{add_type}")
+        ev_id = event_options[ev_sel]
 
-    with st.form("add_match_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            match_name = st.text_input("Match Name / Label *", placeholder="Match 1 or Team A vs Team B")
-            match_date = st.date_input("Match Date *", value=date.today())
-        with c2:
-            venue = st.text_input("Venue", placeholder="Eden Gardens")
-            notes = st.text_area("Notes", height=68)
+    if add_type == "Match":
+        with st.form("inline_match_form", clear_on_submit=True):
+            match_name  = st.text_input("Match name", value=f"Match on {selected_day}")
+            venue       = st.text_input("Venue", placeholder="Optional")
+            
+            if st.form_submit_button("Add Match", use_container_width=True):
+                from db.auth import can_edit
+                if not can_edit():
+                    st.error("Edit access required.")
+                else:
+                    ok, msg = add_match(ev_id, match_name, selected_day, venue=venue)
+                    if ok:
+                        st.success(msg)
+                        load_matches.clear()
+                        st.session_state.pop("cal_selected_day", None)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-        t1 = t2 = "—"
-        if teams:
-            t1 = st.selectbox("Team 1", ["—"]+teams, key="m_t1")
-            t2 = st.selectbox("Team 2", ["—"]+teams, key="m_t2")
+    elif add_type == "Registration":
+        with st.form("inline_reg_form", clear_on_submit=True):
+            deadline   = st.date_input("Deadline", value=selected_day)
+            notes      = st.text_input("Notes", placeholder="Optional")
+            
+            if st.form_submit_button("Add Registration", use_container_width=True):
+                from db.auth import can_edit
+                if not can_edit():
+                    st.error("Edit access required.")
+                else:
+                    ok, msg = add_registration(ev_id, selected_day, deadline, notes)
+                    if ok:
+                        st.success(msg)
+                        load_registrations.clear()
+                        st.session_state.pop("cal_selected_day", None)
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-        submitted = st.form_submit_button("Add Match", use_container_width=True)
+    else:  # Auction
+        with st.form("inline_auction_form", clear_on_submit=True):
+            franchise  = st.text_input("Franchise name", placeholder="e.g. Mumbai Indians")
+            location   = st.text_input("Location", placeholder="Optional")
+            
+            if st.form_submit_button("Add Auction", use_container_width=True):
+                from db.auth import can_edit
+                if not can_edit():
+                    st.error("Edit access required.")
+                else:
+                    if not franchise.strip():
+                        st.error("Franchise name required.")
+                    else:
+                        ok, msg = add_auction(ev_id, franchise.strip(), selected_day, location)
+                        if ok:
+                            st.success(msg)
+                            load_auctions.clear()
+                            st.session_state.pop("cal_selected_day", None)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
-    if submitted:
-        if not match_name.strip():
-            st.error("Match name is required.")
-        else:
-            t1_id = team_ids.get(t1) if t1 != "—" else None
-            t2_id = team_ids.get(t2) if t2 != "—" else None
-            ok, msg = add_match(ev_id, match_name.strip(),
-                                match_date, t1_id, t2_id, venue.strip(), notes.strip())
-            if ok:
-                st.success(msg)
-                u = get_supabase_user()
-                log_activity(u.id if u else None, current_email(), "create", "match",
-                             entity_id=ev_id, details={"event": ev_name or "standalone"})
-            else:
-                st.error(msg)
-
-    # ── Existing matches ──────────────────────────────────────
-    ma_df = load_matches(event_id=ev_id)
-    if not ma_df.empty:
-        st.markdown('<br><div class="card-title">MATCHES</div>', unsafe_allow_html=True)
-        disp = ma_df[["match_name","match_date","venue"]].copy()
-        disp["match_date"] = disp["match_date"].dt.date
-        disp.columns = ["Match","Date","Venue"]
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-
-def _tab_registration() -> None:
-    st.markdown('<div class="card-title">ADD REGISTRATION WINDOW</div>', unsafe_allow_html=True)
-
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="reg_link_ev")
-    ev_id, ev_name = None, None
-    if link_event:
-        ev_id, ev_name = _event_search_select("reg")
-
-    with st.form("add_reg_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            reg_start = st.date_input("Registration Opens *", value=date.today())
-        with c2:
-            reg_dead  = st.date_input("Deadline *", value=date.today())
-        notes = st.text_area("Notes", height=68)
-        submitted = st.form_submit_button("Add Registration Window", use_container_width=True)
-
-    if submitted:
-        if reg_start > reg_dead:
-            st.error("Deadline must be after start.")
-        else:
-            u  = get_supabase_user()
-            ok, msg = add_registration(ev_id, reg_start, reg_dead, notes.strip(),
-                                       user_id=u.id if u else None)
-            if ok:
-                st.success(msg)
-                log_activity(u.id if u else None, current_email(), "create", "registration",
-                             entity_id=ev_id, details={"event": ev_name or "standalone"})
-            else:
-                st.error(msg)
-
-    reg_df = load_registrations()
-    if not reg_df.empty:
-        show_df = reg_df.copy()
-        if ev_id and "event_id" in show_df.columns:
-            show_df = show_df[show_df["event_id"] == ev_id]
-        if not show_df.empty:
-            st.markdown('<br><div class="card-title">EXISTING WINDOWS</div>', unsafe_allow_html=True)
-            cols = [c for c in ["start_date","deadline","notes"] if c in show_df.columns]
-            d = show_df[cols].copy()
-            if "start_date" in d.columns: d["start_date"] = d["start_date"].dt.date
-            if "deadline"   in d.columns: d["deadline"]   = d["deadline"].dt.date
-            d.columns = [c.replace("_"," ").title() for c in cols]
-            st.dataframe(d, use_container_width=True, hide_index=True)
+    if st.button("Cancel", key="cancel_inline"):
+        st.session_state.pop("cal_selected_day", None)
+        st.rerun()
 
 
-def _tab_auction() -> None:
-    st.markdown('<div class="card-title">ADD AUCTION</div>', unsafe_allow_html=True)
+# ── Detail panel ──────────────────────────────────────────────
 
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="auc_link_ev")
-    ev_id, ev_name = None, None
-    if link_event:
-        ev_id, ev_name = _event_search_select("auction")
+def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> None:
+    st.markdown('<div class="detail-panel-title">DETAILS</div>', unsafe_allow_html=True)
 
-    with st.form("add_auction_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            franchise = st.text_input("Franchise Name *", placeholder="Mumbai Indians")
-            auc_date  = st.date_input("Auction Date *", value=date.today())
-        with c2:
-            location = st.text_input("Location", placeholder="Mumbai")
-            notes    = st.text_area("Notes", height=68)
-        submitted = st.form_submit_button("Add Auction", use_container_width=True)
+    if month_df is None or month_df.empty:
+        st.markdown(
+            '<div style="font-size:.82rem;color:#8b949e;padding:.5rem 0;">No items this month.</div>',
+            unsafe_allow_html=True,
+        )
+        return
 
-    if submitted:
-        if not franchise.strip():
-            st.error("Franchise name required.")
-        else:
-            ok, msg = add_auction(ev_id, franchise.strip(), auc_date,
-                                   location.strip(), notes.strip())
-            if ok:
-                st.success(msg)
-                u = get_supabase_user()
-                log_activity(u.id if u else None, current_email(), "create", "auction",
-                             entity_id=ev_id, details={"event": ev_name or "standalone"})
-            else:
-                st.error(msg)
+    titles  = month_df["title"].tolist()
+    sel_idx = st.session_state.get("cal_detail_idx", 0)
+    if sel_idx >= len(titles):
+        sel_idx = 0
 
-    au_df = load_auctions()
-    if not au_df.empty:
-        show_df = au_df.copy()
-        if ev_id and "event_id" in show_df.columns:
-            show_df = show_df[show_df["event_id"] == ev_id]
-        if not show_df.empty:
-            st.markdown('<br><div class="card-title">EXISTING AUCTIONS</div>', unsafe_allow_html=True)
-            cols = [c for c in ["franchise_name","auction_date","location"] if c in show_df.columns]
-            d = show_df[cols].copy()
-            if "auction_date" in d.columns: d["auction_date"] = d["auction_date"].dt.date
-            d.columns = [c.replace("_"," ").title() for c in cols]
-            st.dataframe(d, use_container_width=True, hide_index=True)
+    sel = st.selectbox(
+        "Item", titles,
+        index=sel_idx,
+        key="dp_sel",
+        label_visibility="collapsed",
+    )
 
+    row   = month_df[month_df["title"] == sel].iloc[0]
+    itype = row.get("type", "event")
+    meta  = row.get("metadata", {}) or {}
+
+    badge = TYPE_BADGE.get(itype, "badge-blue")
+    conflict = itype == "event" and row.get("id") in conflict_ids
+
+    st.markdown(f"""
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.7rem;">
+        <span class="badge {badge}">{itype}</span>
+        {"<span class='badge badge-red'>Conflict</span>" if conflict else ""}
+    </div>""", unsafe_allow_html=True)
+
+    s = row["start_date"]
+    e = row["end_date"]
+    s_str = s.date().isoformat() if hasattr(s, "date") and pd.notna(s) else "—"
+    e_str = e.date().isoformat() if hasattr(e, "date") and pd.notna(e) else "—"
+
+    detail_rows = [("Start", s_str), ("End", e_str)]
+    for k, v in meta.items():
+        if v:
+            detail_rows.append((k.replace("_"," ").title(), str(v)))
+
+    for lbl, val in detail_rows:
+        st.markdown(
+            f'<div class="detail-row">'
+            f'<span class="detail-label">{lbl}</span>'
+            f'<span class="detail-val">{val}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    if user_tz != "UTC":
+        st.markdown(
+            f'<div style="font-size:.7rem;color:#8b949e;margin-top:.5rem;">'
+            f'Times shown in {user_tz}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ── Filter Helper (No UI rendering, just logic) ────────────────
+
+def _apply_filters(df: pd.DataFrame, search_q: str, type_f: list, gender_f: str, category_f: str, date_from, date_to) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if type_f:
+        df = df[df["type"].isin(type_f)]
+    if search_q.strip():
+        df = df[df["title"].str.contains(search_q.strip(), case=False, na=False)]
+    if gender_f != "All":
+        df = df[df["metadata"].apply(lambda m: m.get("gender","") == gender_f if isinstance(m, dict) else True)]
+    if category_f != "All":
+        df = df[df["metadata"].apply(lambda m: m.get("category","") == category_f if isinstance(m, dict) else True)]
+    if date_from:
+        df = df[df["start_date"] >= pd.Timestamp(date_from)]
+    if date_to:
+        df = df[df["end_date"] <= pd.Timestamp(date_to)]
+    return df.reset_index(drop=True)
+
+
+# ── Main render ───────────────────────────────────────────────
 
 def render() -> None:
     st.markdown("""
+    <style>
+    .pill-match   {background:rgba(63,185,80,.82); color:#e8ffe8;border-left:3px solid #4dff7c;}
+    .pill-reg     {background:rgba(240,180,41,.82);color:#fff8e0;border-left:3px solid #f0b429;}
+    .pill-auction {background:rgba(188,140,255,.82);color:#f5e8ff;border-left:3px solid #cc88ff;}
+    .gcal-cell.gcal-selected {border-color:var(--accent)!important;background:rgba(240,180,41,.08);}
+    </style>""", unsafe_allow_html=True)
+
+    st.markdown("""
     <div class="page-header">
-        <div><h1>EVENT MANAGER</h1>
-        <p>Tournaments · Matches · Registrations · Auctions</p></div>
+        <div><h1>CALENDAR</h1>
+        <p>Events · Matches · Registrations · Auctions</p></div>
     </div>""", unsafe_allow_html=True)
 
-    if not can_edit():
-        st.markdown("""
-        <div class="alert-box alert-warn">
-            <div class="icon">🔒</div>
-            <div class="body"><div class="title">View-Only Access</div>
-            Contact an admin to request edit access.</div>
-        </div>""", unsafe_allow_html=True)
-        return
+    user_tz  = _get_user_tz()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Tournament / Series", "Matches", "Registration", "Auctions"
-    ])
-    with tab1: _tab_tournament()
-    with tab2: _tab_matches()
-    with tab3: _tab_registration()
-    with tab4: _tab_auction()
+    # ── Load raw data & conflicts ───────
+    try:
+        all_items_raw = load_calendar_items()
+    except Exception:
+        all_items_raw = pd.DataFrame()
+
+    try:
+        ev_df = load_events()
+        overlaps = detect_event_overlaps(ev_df)
+    except Exception:
+        overlaps = []
+    
+    conflict_ids: set = set()
+    for o in overlaps:
+        for k in ("id_a","id_b"):
+            if k in o: conflict_ids.add(o[k])
+
+    # ── Year bounds ───────
+    today    = date.today()
+    year_min, year_max = today.year, today.year + 2
+    if not all_items_raw.empty:
+        try:
+            year_min = min(year_min, int(all_items_raw["start_date"].dt.year.min()))
+            year_max = max(year_max, int(all_items_raw["end_date"].dt.year.max()))
+        except Exception:
+            pass
+    year_list = list(range(int(year_min), int(year_max) + 1))
+    
+    # ── UNIFIED CONTROL BAR (Search | Year | Month | Filters | Quick Add) ──
+    st.markdown('<div style="margin-top:1rem; margin-bottom: 0.5rem;"></div>', unsafe_allow_html=True)
+    c_search, c_y, c_m, c_filt, c_qa = st.columns([3, 1, 1, 1, 1], gap="small")
+    
+    with c_search:
+        search_q = st.text_input("Search", placeholder="Search event / match...", label_visibility="collapsed", key="cal_search")
+        
+    with c_y:
+        def_yr = year_list.index(today.year) if today.year in year_list else 0
+        sel_year = st.selectbox("Year", year_list, index=def_yr, key="cal_yr", label_visibility="collapsed")
+        
+    with c_m:
+        sel_month = st.selectbox("Month", list(range(1, 13)), index=today.month - 1, format_func=lambda m: MONTHS[m], key="cal_mo", label_visibility="collapsed")
+
+    with c_filt:
+        with st.popover("⚙️ Filters", use_container_width=True):
+            type_f = st.multiselect("Item types", ["event","match","registration","auction"], default=["event","match","registration","auction"])
+            category_f = st.selectbox("Category", ["All","International","Domestic","League"])
+            gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"])
+            date_from = st.date_input("From date", value=None)
+            date_to = st.date_input("To date", value=None)
+
+    with c_qa:
+        from db.auth import can_edit as _can_edit
+        if _can_edit():
+            # Standard button triggers the inline form beneath the calendar
+            if st.button("➕ Quick Add", use_container_width=True):
+                st.session_state["cal_selected_day"] = st.session_state.get("cal_selected_day") or today
+                st.rerun()
+
+    # Apply Filters
+    all_items = _apply_filters(all_items_raw, search_q, type_f, gender_f, category_f, date_from, date_to)
+
+    # ── Month slice ────────────────────────────────────────────
+    last_day    = calendar.monthrange(sel_year, sel_month)[1]
+    month_start = pd.Timestamp(date(sel_year, sel_month, 1))
+    month_end   = pd.Timestamp(date(sel_year, sel_month, last_day))
+
+    month_items = pd.DataFrame()
+    if not all_items.empty:
+        try:
+            month_items = all_items[
+                (all_items["start_date"] <= month_end) &
+                (all_items["end_date"]   >= month_start)
+            ].copy().reset_index(drop=True)
+        except Exception:
+            pass
+
+    selected_day: date | None = st.session_state.get("cal_selected_day")
+
+    # ── Two-column layout ──────────────────────────────────────
+    st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
+    cal_col, panel_col = st.columns([4, 1.2], gap="large")
+
+    badge_html = (
+        f'<span class="badge badge-red">{len(overlaps)} conflict(s)</span>' if overlaps else '<span class="badge badge-green">No conflicts</span>'
+    )
+
+    with cal_col:
+        st.markdown(f"""
+        <div class="gcal-nav">
+            <div class="gcal-month-label">{MONTHS[sel_month]} {sel_year}</div>
+            <div style="font-size:.76rem;color:#8b949e;display:flex;align-items:center;gap:1rem;">
+                <span>{len(month_items)} item(s) — {user_tz}</span>
+                {badge_html}
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown(
+            _build_grid(sel_year, sel_month, month_items, conflict_ids, selected_day),
+            unsafe_allow_html=True,
+        )
+        st.markdown(_legend_html(), unsafe_allow_html=True)
+
+        # ── Inline Form triggered BELOW Calendar ───────────────
+        if selected_day and _can_edit():
+            st.markdown('<div style="margin-top:2rem;"></div>', unsafe_allow_html=True)
+            _inline_add_form(selected_day)
+
+    with panel_col:
+        st.markdown('<div class="detail-panel">', unsafe_allow_html=True)
+        _detail_panel(month_items, conflict_ids, user_tz)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Month item list ────────────────────────────────────────
+    if not month_items.empty:
+        st.markdown("---")
+        st.markdown(
+            f'<div class="card-title">{MONTHS[sel_month]} {sel_year} — All Items</div>',
+            unsafe_allow_html=True,
+        )
+        disp = month_items[["type","title","start_date","end_date"]].copy()
+        disp["start_date"] = disp["start_date"].dt.date
+        disp["end_date"]   = disp["end_date"].dt.date
+        disp.columns       = ["Type","Title","Start","End"]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
