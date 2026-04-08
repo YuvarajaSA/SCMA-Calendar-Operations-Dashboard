@@ -63,9 +63,18 @@ def render() -> None:
         st.markdown('<div class="card-title">EDIT DETAILS</div>', unsafe_allow_html=True)
         tz_index = TIMEZONES.index(current_tz) if current_tz in TIMEZONES else 0
 
+        DESIGNATIONS = [
+            "","Intern","Operations Manager","Lead","Partnership Manager",
+            "Designer","Scout","Analyst","Director","Other",
+        ]
+        current_desig = profile.get("designation","") or ""
+        desig_index   = DESIGNATIONS.index(current_desig) if current_desig in DESIGNATIONS else 0
+
         with st.form("profile_edit_form"):
             name_val  = st.text_input("Full Name",
                                        value=profile.get("name","") or current_name())
+            desig_val = st.selectbox("Job Title / Designation", DESIGNATIONS, index=desig_index,
+                                     help="Your role within the agency (separate from system permissions)")
             phone_val = st.text_input("Phone",    value=profile.get("phone",""))
             loc_val   = st.text_input("Location / Office", value=profile.get("location",""))
             tz_val    = st.selectbox(
@@ -82,7 +91,15 @@ def render() -> None:
                 ok, msg = update_profile_details(
                     user.id, name_val, phone_val, loc_val, tz_val
                 )
+                # Also save designation separately (safe if column doesn't exist yet)
                 if ok:
+                    try:
+                        from db.supabase_client import get_client as _gc
+                        _gc().table("profiles").update(
+                            {"designation": desig_val}
+                        ).eq("id", user.id).execute()
+                    except Exception:
+                        pass  # Column may not exist yet — run schema_patch2.sql
                     st.session_state["user_name"] = name_val.strip()
                     st.session_state.pop("_cached_profile", None)
                     st.session_state.pop("profile_checked", None)
@@ -92,6 +109,7 @@ def render() -> None:
 
     with col_sec:
         st.markdown('<div class="card-title">ACCOUNT</div>', unsafe_allow_html=True)
+        designation_display = profile.get("designation","") or "—"
         st.markdown(f"""
         <div class="card-sm">
             <div class="detail-row">
@@ -101,6 +119,10 @@ def render() -> None:
             <div class="detail-row">
                 <span class="detail-label">Role</span>
                 <span class="detail-val"><span class="role-pill {rc}">{ri} {role}</span></span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Designation</span>
+                <span class="detail-val" style="font-size:.8rem;">{designation_display}</span>
             </div>
             <div class="detail-row">
                 <span class="detail-label">Timezone</span>
@@ -113,15 +135,12 @@ def render() -> None:
             <div class="icon">ℹ</div>
             <div class="body" style="font-size:.8rem;">
                 <b>To change your password:</b><br>
-                Log out, then use the <b>Forgot Password</b> tab
-                on the login screen. A reset link will be sent to your email.
+                Log out → <b>Forgot Password</b> tab on the login screen.
             </div>
         </div>""", unsafe_allow_html=True)
 
-    # Log Out — Phase 11
-    st.markdown("---")
-    lc1, _ = st.columns([1, 5])
-    with lc1:
+        # Issue 6: Logout inside the profile panel, right column (Issue 12)
+        st.markdown("<div style='margin-top:.8rem;'></div>", unsafe_allow_html=True)
         if st.button("Log Out", use_container_width=True, key="prof_logout"):
             logout()
             st.rerun()

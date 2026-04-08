@@ -428,8 +428,10 @@ def add_match(
     event_id: int | None, match_name: str, match_date: date,
     team1_id: int | None = None, team2_id: int | None = None,
     venue: str = "", notes: str = "",
+    match_datetime=None,
 ) -> tuple[bool, str]:
-    """event_id is optional — pass None for standalone friendly matches."""
+    """event_id is optional — pass None for standalone friendly matches.
+    match_datetime: UTC datetime (TIMESTAMPTZ) for Issue 15 timezone support."""
     sb = get_client()
 
     # Validate event_id if provided
@@ -469,6 +471,13 @@ def add_match(
         }
         if event_id is not None:
             payload["event_id"] = event_id
+        # Issue 15: store UTC datetime if provided
+        if match_datetime is not None:
+            import pytz
+            dt = match_datetime
+            if hasattr(dt, "tzinfo") and dt.tzinfo is None:
+                dt = dt.replace(tzinfo=pytz.UTC)
+            payload["match_datetime"] = dt.isoformat()
         sb.table("matches").insert(payload).execute()
         load_matches.clear()
         return True, f"Match **{match_name}** added."

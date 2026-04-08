@@ -113,49 +113,52 @@ def _tab_tournament() -> None:
 def _tab_matches() -> None:
     st.markdown('<div class="card-title">ADD MATCH</div>', unsafe_allow_html=True)
 
-    ev_id, ev_name = _event_search_select("match")
-    if ev_id is None:
-        return
+    # Issue 3: Event linking is optional
+    link_event = st.checkbox("Link to an event", value=False, key="match_link_ev")
+    ev_id, ev_name = None, None
+    teams, team_ids = [], {}
 
-    # Teams for this event
-    teams  = teams_for_event(ev_name)
-    teams_df = load_teams()
-    team_ids: dict[str, int] = {}
-    if not teams_df.empty and "event_name" in teams_df.columns:
-        ev_teams = teams_df[teams_df["event_name"] == ev_name]
-        if not ev_teams.empty and "id" in ev_teams.columns:
-            team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
+    if link_event:
+        ev_id, ev_name = _event_search_select("match")
+        if ev_id is not None:
+            teams_df = load_teams()
+            if not teams_df.empty and "event_name" in teams_df.columns:
+                ev_teams = teams_df[teams_df["event_name"] == ev_name]
+                if not ev_teams.empty and "id" in ev_teams.columns:
+                    team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
+            teams = list(team_ids.keys())
 
     with st.form("add_match_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            match_name = st.text_input("Match Name / Label", placeholder="Match 1")
+            match_name = st.text_input("Match Name / Label *", placeholder="Match 1 or Team A vs Team B")
             match_date = st.date_input("Match Date *", value=date.today())
         with c2:
             venue = st.text_input("Venue", placeholder="Eden Gardens")
             notes = st.text_area("Notes", height=68)
 
+        t1 = t2 = "—"
         if teams:
             t1 = st.selectbox("Team 1", ["—"]+teams, key="m_t1")
             t2 = st.selectbox("Team 2", ["—"]+teams, key="m_t2")
-        else:
-            st.info("No teams for this event yet. Add teams first.")
-            t1 = t2 = "—"
 
         submitted = st.form_submit_button("Add Match", use_container_width=True)
 
     if submitted:
-        t1_id = team_ids.get(t1) if t1 != "—" else None
-        t2_id = team_ids.get(t2) if t2 != "—" else None
-        ok, msg = add_match(ev_id, match_name.strip() or f"{t1} vs {t2}",
-                            match_date, t1_id, t2_id, venue.strip(), notes.strip())
-        if ok:
-            st.success(msg)
-            u = get_supabase_user()
-            log_activity(u.id if u else None, current_email(), "create", "match",
-                         entity_id=ev_id, details={"event": ev_name})
+        if not match_name.strip():
+            st.error("Match name is required.")
         else:
-            st.error(msg)
+            t1_id = team_ids.get(t1) if t1 != "—" else None
+            t2_id = team_ids.get(t2) if t2 != "—" else None
+            ok, msg = add_match(ev_id, match_name.strip(),
+                                match_date, t1_id, t2_id, venue.strip(), notes.strip())
+            if ok:
+                st.success(msg)
+                u = get_supabase_user()
+                log_activity(u.id if u else None, current_email(), "create", "match",
+                             entity_id=ev_id, details={"event": ev_name or "standalone"})
+            else:
+                st.error(msg)
 
     # ── Existing matches ──────────────────────────────────────
     ma_df = load_matches(event_id=ev_id)
@@ -170,9 +173,11 @@ def _tab_matches() -> None:
 def _tab_registration() -> None:
     st.markdown('<div class="card-title">ADD REGISTRATION WINDOW</div>', unsafe_allow_html=True)
 
-    ev_id, ev_name = _event_search_select("reg")
-    if ev_id is None:
-        return
+    # Issue 3: Event linking is optional
+    link_event = st.checkbox("Link to an event", value=False, key="reg_link_ev")
+    ev_id, ev_name = None, None
+    if link_event:
+        ev_id, ev_name = _event_search_select("reg")
 
     with st.form("add_reg_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -193,28 +198,33 @@ def _tab_registration() -> None:
             if ok:
                 st.success(msg)
                 log_activity(u.id if u else None, current_email(), "create", "registration",
-                             entity_id=ev_id, details={"event": ev_name})
+                             entity_id=ev_id, details={"event": ev_name or "standalone"})
             else:
                 st.error(msg)
 
     reg_df = load_registrations()
-    if not reg_df.empty and "event_id" in reg_df.columns:
-        ev_regs = reg_df[reg_df["event_id"] == ev_id]
-        if not ev_regs.empty:
+    if not reg_df.empty:
+        show_df = reg_df.copy()
+        if ev_id and "event_id" in show_df.columns:
+            show_df = show_df[show_df["event_id"] == ev_id]
+        if not show_df.empty:
             st.markdown('<br><div class="card-title">EXISTING WINDOWS</div>', unsafe_allow_html=True)
-            d = ev_regs[["start_date","deadline","notes"]].copy()
-            d["start_date"] = d["start_date"].dt.date
-            d["deadline"]   = d["deadline"].dt.date
-            d.columns = ["Opens","Deadline","Notes"]
+            cols = [c for c in ["start_date","deadline","notes"] if c in show_df.columns]
+            d = show_df[cols].copy()
+            if "start_date" in d.columns: d["start_date"] = d["start_date"].dt.date
+            if "deadline"   in d.columns: d["deadline"]   = d["deadline"].dt.date
+            d.columns = [c.replace("_"," ").title() for c in cols]
             st.dataframe(d, use_container_width=True, hide_index=True)
 
 
 def _tab_auction() -> None:
     st.markdown('<div class="card-title">ADD AUCTION</div>', unsafe_allow_html=True)
 
-    ev_id, ev_name = _event_search_select("auction")
-    if ev_id is None:
-        return
+    # Issue 3: Event linking is optional
+    link_event = st.checkbox("Link to an event", value=False, key="auc_link_ev")
+    ev_id, ev_name = None, None
+    if link_event:
+        ev_id, ev_name = _event_search_select("auction")
 
     with st.form("add_auction_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -236,18 +246,21 @@ def _tab_auction() -> None:
                 st.success(msg)
                 u = get_supabase_user()
                 log_activity(u.id if u else None, current_email(), "create", "auction",
-                             entity_id=ev_id, details={"event": ev_name})
+                             entity_id=ev_id, details={"event": ev_name or "standalone"})
             else:
                 st.error(msg)
 
     au_df = load_auctions()
-    if not au_df.empty and "event_id" in au_df.columns:
-        ev_au = au_df[au_df["event_id"] == ev_id]
-        if not ev_au.empty:
+    if not au_df.empty:
+        show_df = au_df.copy()
+        if ev_id and "event_id" in show_df.columns:
+            show_df = show_df[show_df["event_id"] == ev_id]
+        if not show_df.empty:
             st.markdown('<br><div class="card-title">EXISTING AUCTIONS</div>', unsafe_allow_html=True)
-            d = ev_au[["franchise_name","auction_date","location"]].copy()
-            d["auction_date"] = d["auction_date"].dt.date
-            d.columns = ["Franchise","Date","Location"]
+            cols = [c for c in ["franchise_name","auction_date","location"] if c in show_df.columns]
+            d = show_df[cols].copy()
+            if "auction_date" in d.columns: d["auction_date"] = d["auction_date"].dt.date
+            d.columns = [c.replace("_"," ").title() for c in cols]
             st.dataframe(d, use_container_width=True, hide_index=True)
 
 

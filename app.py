@@ -57,7 +57,7 @@ if status == "rejected":
 
 if not is_logged_in():
     st.error("Access check failed. Please log out and try again.")
-    if st.button("Log Out"):
+    if st.button("Log Out", key="fallback_logout"):
         logout(); st.rerun()
     st.stop()
 
@@ -74,25 +74,25 @@ import streamlit as st
 
 # ── Navigation structure ──────────────────────────────────────
 NAV_MAIN = [
-    ("Calendar",     "📅", calendar_view.render),
-    ("Dashboard",    "📊", dashboard.render),
-    ("Search",       "🔍", search.render),
-    ("Conflicts",    "⚠",  conflicts.render),
-    ("Availability", "🧑", availability.render),
-    ("Timeline",     "📈", timeline.render),
+    ("Calendar",     "", calendar_view.render),
+    ("Dashboard",    "", dashboard.render),
+    ("Search",       "", search.render),
+    ("Conflicts",    "", conflicts.render),
+    ("Availability", "", availability.render),
+    ("Timeline",     "", timeline.render),
 ]
 NAV_EDIT = [
-    ("Event Manager","➕", event_manager.render),
-    ("Add Team",     "🏟", add_team_render),
-    ("Add Squad",    "👥", add_squad.render),
-    ("Clients",      "👤", None),   # lazy import below
-    ("CSV Upload",   "📂", csv_upload.render),
+    ("Event Manager","", event_manager.render),
+    ("Add Team",     "", add_team_render),
+    ("Add Squad",    "", add_squad.render),
+    ("Clients",      "", None),   # lazy import below
+    ("CSV Upload",   "", csv_upload.render),
 ]
 NAV_ADMIN = [
-    ("Admin",        "🛡", admin.render),
+    ("Admin",        "", admin.render),
 ]
 NAV_BOTTOM = [
-    ("My Profile",   "👤", profile_settings.render),
+    ("My Profile",   "", profile_settings.render),
 ]
 
 # ── Session-state routing ─────────────────────────────────────
@@ -100,18 +100,15 @@ if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Calendar"
 
 
-def _nav_btn(label: str, icon: str) -> None:
-    active    = st.session_state["current_page"] == label
-    btn_style = (
-        "background:rgba(240,180,41,.14);color:#f0b429;border:1px solid rgba(240,180,41,.3);"
-        if active else
-        "background:transparent;color:#c9d1d9;border:1px solid transparent;"
-    )
+def _nav_btn(label: str, icon: str = "") -> None:
+    """Session-state button nav. Active page gets accent styling via CSS class."""
+    active = st.session_state["current_page"] == label
+    display = label  # no emoji prefix (Issue 5/17)
     if st.button(
-        f"{icon}  {label}",
+        display,
         key=f"nav_{label}",
         use_container_width=True,
-        help=label,
+        type="primary" if active else "secondary",
     ):
         st.session_state["current_page"] = label
         st.rerun()
@@ -138,6 +135,18 @@ with st.sidebar:
             SOPHIE CLAIRE M AGENCY
         </div>
     </div>""", unsafe_allow_html=True)
+
+    # Issue 10: Dark / Light mode toggle
+    light = st.toggle("Light Mode", value=st.session_state.get("theme","dark")=="light",
+                       key="theme_toggle")
+    if light:
+        st.session_state["theme"] = "light"
+        st.markdown("<style>:root{" +
+            "--bg:#f6f8fa;--surface:#fff;--surface2:#f0f2f5;--surface3:#e8eaed;" +
+            "--border:#d0d7de;--border2:#afb8c1;--text:#1f2328;--text-dim:#636c76;--muted:#636c76;" +
+            "}</style>", unsafe_allow_html=True)
+    else:
+        st.session_state["theme"] = "dark"
 
     # User card
     role      = get_role()

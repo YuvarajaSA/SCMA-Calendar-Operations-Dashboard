@@ -18,7 +18,7 @@ _CSS = """
 }
 
 html,body,[class*="css"] { font-family:'DM Sans',sans-serif; background:var(--bg)!important; color:var(--text)!important; font-size:14px; }
-.main .block-container    { padding:1.5rem 1.5rem 3rem!important; max-width:100%!important; width:100%!important; }
+.main .block-container    { padding:1.5rem 1.5rem 3rem!important; max-width:100%!important; width:100%!important; box-sizing:border-box; }
 section.main > div { width:100% !important; }
 .block-container          { padding-top:1.5rem!important; }
 hr { border-color:var(--border)!important; }
@@ -77,7 +77,7 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:hover { b
 .p3 { background:var(--blue);color:#0d1117; }
 
 /* RIGHT DETAIL PANEL */
-.detail-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:1.2rem; position:sticky; top:1rem; }
+.detail-panel { background:#161b22; border:1px solid var(--border); border-radius:10px; padding:1rem; position:sticky; top:1rem; min-height:120px; }
 .detail-panel-title { font-family:'Bebas Neue',sans-serif; font-size:1.1rem; letter-spacing:.06em; color:var(--accent); margin-bottom:1rem; padding-bottom:.6rem; border-bottom:1px solid var(--border); }
 .detail-row { display:flex; justify-content:space-between; align-items:flex-start; padding:.4rem 0; border-bottom:1px solid rgba(48,54,61,.5); font-size:.84rem; }
 .detail-row:last-child { border-bottom:none; }
@@ -198,7 +198,8 @@ div[data-testid="stForm"] { background:var(--surface2)!important; border:1px sol
     .gcal-cell { min-height:148px; }
     .gcal-pill { font-size:.72rem; padding:.27rem .52rem; }
 }
-/* ── Nav buttons (sidebar) — Phase 1 ───────────────────────── */
+/* ── Nav buttons (sidebar) — Issues 1/5/11 ─────────────────── */
+/* Target both primary (active) and secondary (inactive) nav buttons */
 section[data-testid="stSidebar"] .stButton>button {
     background:transparent !important;
     color:var(--text-dim) !important;
@@ -218,6 +219,17 @@ section[data-testid="stSidebar"] .stButton>button:hover {
     color:var(--text) !important;
     transform:none !important;
     opacity:1 !important;
+}
+/* Active page — primary button type */
+section[data-testid="stSidebar"] .stButton>button[kind="primary"] {
+    background:rgba(240,180,41,.12) !important;
+    color:var(--accent) !important;
+    border-left:2px solid var(--accent) !important;
+    border-radius:0 6px 6px 0 !important;
+    font-weight:700 !important;
+}
+section[data-testid="stSidebar"] .stButton>button[kind="primary"]:hover {
+    background:rgba(240,180,41,.18) !important;
 }
 
 /* ── Calendar selected cell ─────────────────────────────────── */
@@ -248,6 +260,27 @@ div[data-testid="stForm"] {
     .page-header    { margin-bottom:1.2rem; padding-bottom:.8rem; }
 }
 
+/* ── Mobile / tablet responsiveness (Issues 18/19) ─────────── */
+@media (max-width: 768px) {
+    .main .block-container { padding:.5rem .5rem 1.5rem !important; }
+    .gcal-cell  { min-height:48px !important; padding:.12rem !important; }
+    .gcal-pill  { font-size:.58rem !important; padding:.1rem .25rem !important; border-left-width:2px !important; }
+    .gcal-pill-name { font-size:.56rem !important; }
+    .stat-chip  { min-width:72px !important; padding:.5rem .6rem !important; }
+    .stat-chip .val { font-size:1.3rem !important; }
+    .detail-panel { position:static !important; }
+    .page-header h1 { font-size:1.7rem !important; }
+}
+/* ── Light mode (Issue 10) ──────────────────────────────────── */
+.theme-light {
+    --bg:#f6f8fa; --surface:#ffffff; --surface2:#f0f2f5; --surface3:#e8eaed;
+    --border:#d0d7de; --border2:#afb8c1;
+    --text:#1f2328; --text-dim:#636c76;
+    --muted:#636c76;
+}
+.theme-light .gcal-cell { background:#fff; }
+.theme-light .gcal-cell.gcal-weekend { background:#fafafa; }
+.theme-light .gcal-cell.gcal-other   { background:#f6f8fa; }
 """
 
 
