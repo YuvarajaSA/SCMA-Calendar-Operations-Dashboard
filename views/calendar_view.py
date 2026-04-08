@@ -168,100 +168,6 @@ def _legend_html() -> str:
     ) + '</div>'
 
 
-# ── Inline Add Form ───────────────────────────────────────────
-
-def _inline_add_form(selected_day: date) -> None:
-    st.markdown(f"""
-    <div style="background:#1c2128;border:1px solid #30363d;border-radius:10px;
-                padding:1rem 1.2rem;margin-bottom:1rem;">
-        <div style="font-size:.72rem;font-weight:700;letter-spacing:.1em;
-                    text-transform:uppercase;color:#f0b429;margin-bottom:.7rem;">
-            Quick Add — {selected_day}
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    add_type = st.selectbox("What to add", ["Match","Registration","Auction"],
-                             key="inline_type", label_visibility="collapsed")
-
-    # Build smart dropdown options mapping {"Event Name": id, "(None)": None}
-    ev_df = load_events()
-    event_options = {"(None)": None}
-    if not ev_df.empty and "event_name" in ev_df.columns and "id" in ev_df.columns:
-        for _, r in ev_df.iterrows():
-            event_options[r["event_name"]] = int(r["id"])
-
-    # Event linking MUST be outside st.form for dynamic selection to work
-    link_event = st.checkbox("Link to an event", value=False, key="ia_link_ev")
-    ev_id = None
-    if link_event:
-        ev_sel = st.selectbox("Select Event", list(event_options.keys()), key=f"ia_ev_{add_type}")
-        ev_id = event_options[ev_sel]
-
-    if add_type == "Match":
-        with st.form("inline_match_form", clear_on_submit=True):
-            match_name  = st.text_input("Match name", value=f"Match on {selected_day}")
-            venue       = st.text_input("Venue", placeholder="Optional")
-            
-            if st.form_submit_button("Add Match", use_container_width=True):
-                from db.auth import can_edit
-                if not can_edit():
-                    st.error("Edit access required.")
-                else:
-                    ok, msg = add_match(ev_id, match_name, selected_day, venue=venue)
-                    if ok:
-                        st.success(msg)
-                        load_matches.clear()
-                        st.session_state.pop("cal_selected_day", None)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-    elif add_type == "Registration":
-        with st.form("inline_reg_form", clear_on_submit=True):
-            deadline   = st.date_input("Deadline", value=selected_day)
-            notes      = st.text_input("Notes", placeholder="Optional")
-            
-            if st.form_submit_button("Add Registration", use_container_width=True):
-                from db.auth import can_edit
-                if not can_edit():
-                    st.error("Edit access required.")
-                else:
-                    ok, msg = add_registration(ev_id, selected_day, deadline, notes)
-                    if ok:
-                        st.success(msg)
-                        load_registrations.clear()
-                        st.session_state.pop("cal_selected_day", None)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-    else:  # Auction
-        with st.form("inline_auction_form", clear_on_submit=True):
-            franchise  = st.text_input("Franchise name", placeholder="e.g. Mumbai Indians")
-            location   = st.text_input("Location", placeholder="Optional")
-            
-            if st.form_submit_button("Add Auction", use_container_width=True):
-                from db.auth import can_edit
-                if not can_edit():
-                    st.error("Edit access required.")
-                else:
-                    if not franchise.strip():
-                        st.error("Franchise name required.")
-                    else:
-                        ok, msg = add_auction(ev_id, franchise.strip(), selected_day, location)
-                        if ok:
-                            st.success(msg)
-                            load_auctions.clear()
-                            st.session_state.pop("cal_selected_day", None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-
-    if st.button("Cancel", key="cancel_inline"):
-        st.session_state.pop("cal_selected_day", None)
-        st.rerun()
-
-
 # ── Detail panel ──────────────────────────────────────────────
 
 def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> None:
@@ -417,10 +323,74 @@ def render() -> None:
     with c_qa:
         from db.auth import can_edit as _can_edit
         if _can_edit():
-            # Standard button triggers the inline form beneath the calendar
-            if st.button("➕ Quick Add", use_container_width=True):
-                st.session_state["cal_selected_day"] = st.session_state.get("cal_selected_day") or today
-                st.rerun()
+            # Quick Add as a Popover Menu
+            with st.popover("➕ Quick Add", use_container_width=True):
+                st.markdown("**Quick Add**")
+                
+                # Default date from clicked calendar cell, or today
+                sel_day = st.session_state.get("cal_selected_day", today)
+                add_type = st.selectbox("Type", ["Match","Registration","Auction"], key="qa_pop_type")
+                
+                # Build smart dropdown options mapping {"Event Name": id, "(None)": None}
+                event_options = {"(None)": None}
+                if not ev_df.empty and "event_name" in ev_df.columns and "id" in ev_df.columns:
+                    for _, r in ev_df.iterrows():
+                        event_options[r["event_name"]] = int(r["id"])
+
+                # Event linking
+                link_event = st.checkbox("Link to an event", value=False, key="qa_pop_link")
+                ev_id_m = None
+                if link_event:
+                    ev_sel = st.selectbox("Select Event", list(event_options.keys()), key=f"qa_pop_ev_{add_type}")
+                    ev_id_m = event_options[ev_sel]
+
+                # Forms based on type
+                if add_type == "Match":
+                    with st.form("qa_match_form", clear_on_submit=True):
+                        pick_date   = st.date_input("Date", value=sel_day)
+                        match_name  = st.text_input("Match name", value=f"Match on {pick_date}")
+                        venue       = st.text_input("Venue", placeholder="Optional")
+                        if st.form_submit_button("Add Match", use_container_width=True):
+                            ok, msg = add_match(ev_id_m, match_name, pick_date, venue=venue)
+                            if ok:
+                                st.success(msg)
+                                load_matches.clear()
+                                st.session_state.pop("cal_selected_day", None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                                
+                elif add_type == "Registration":
+                    with st.form("qa_reg_form", clear_on_submit=True):
+                        deadline   = st.date_input("Deadline", value=sel_day)
+                        notes      = st.text_input("Notes", placeholder="Optional")
+                        if st.form_submit_button("Add Registration", use_container_width=True):
+                            ok, msg = add_registration(ev_id_m, sel_day, deadline, notes)
+                            if ok:
+                                st.success(msg)
+                                load_registrations.clear()
+                                st.session_state.pop("cal_selected_day", None)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                                
+                else:  # Auction
+                    with st.form("qa_auc_form", clear_on_submit=True):
+                        pick_date  = st.date_input("Auction Date", value=sel_day)
+                        franchise  = st.text_input("Franchise name", placeholder="e.g. Mumbai Indians")
+                        location   = st.text_input("Location", placeholder="Optional")
+                        if st.form_submit_button("Add Auction", use_container_width=True):
+                            if not franchise.strip():
+                                st.error("Franchise name required.")
+                            else:
+                                ok, msg = add_auction(ev_id_m, franchise.strip(), pick_date, location)
+                                if ok:
+                                    st.success(msg)
+                                    load_auctions.clear()
+                                    st.session_state.pop("cal_selected_day", None)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
 
     # Apply Filters
     all_items = _apply_filters(all_items_raw, search_q, type_f, gender_f, category_f, date_from, date_to)
@@ -465,11 +435,6 @@ def render() -> None:
             unsafe_allow_html=True,
         )
         st.markdown(_legend_html(), unsafe_allow_html=True)
-
-        # ── Inline Form triggered BELOW Calendar ───────────────
-        if selected_day and _can_edit():
-            st.markdown('<div style="margin-top:2rem;"></div>', unsafe_allow_html=True)
-            _inline_add_form(selected_day)
 
     with panel_col:
         st.markdown('<div class="detail-panel">', unsafe_allow_html=True)
