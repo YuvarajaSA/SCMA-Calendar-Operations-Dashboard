@@ -347,28 +347,35 @@ def _detail_panel(month_df: pd.DataFrame, conflict_ids: set, user_tz: str) -> No
 
 # ── Filters panel ─────────────────────────────────────────────
 
-
-
-# ── Filters panel (Now an inline control bar) ─────────────────
-
 def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
-    """Apply search + type + gender + category + client filters via inline control bar."""
-    # Control Bar Layout
-    st.markdown('<div style="margin-bottom:1rem;"></div>', unsafe_allow_html=True)
-    c_search, c_types, c_cat, c_gend, c_from, c_to = st.columns([2.5, 2, 1.5, 1.5, 1.2, 1.2])
-    
-    with c_search:
-        search_q = st.text_input("Search", placeholder="Search event / match...", label_visibility="collapsed", key="cal_search")
-    with c_types:
-        type_f = st.multiselect("Types", ["event","match","registration","auction"], default=["event","match","registration","auction"], label_visibility="collapsed", placeholder="Item types...", key="cf_types")
-    with c_cat:
-        category_f = st.selectbox("Category", ["All","International","Domestic","League"], label_visibility="collapsed", key="cf_cat")
-    with c_gend:
-        gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"], label_visibility="collapsed", key="cf_g")
-    with c_from:
-        date_from = st.date_input("From", value=None, label_visibility="collapsed", key="cf_from")
-    with c_to:
-        date_to = st.date_input("To", value=None, label_visibility="collapsed", key="cf_to")
+    """Apply search + type + gender + category + client filters."""
+    with st.expander("Filters & Search", expanded=False):
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        with fc1:
+            search_q = st.text_input("Search title", placeholder="Event / match name…", key="cal_search")
+            gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"], key="cf_g")
+        with fc2:
+            type_f = st.multiselect(
+                "Item types",
+                ["event","match","registration","auction"],
+                default=["event","match","registration","auction"],
+                key="cf_types",
+            )
+            category_f = st.selectbox("Category", ["All","International","Domestic","League"], key="cf_cat")
+        with fc3:
+            date_from = st.date_input("From date", value=None, key="cf_from")
+            date_to   = st.date_input("To date",   value=None, key="cf_to")
+        with fc4:
+            # Phase 5: Client filter — loads clients for filtering
+            try:
+                from db.operations import load_clients
+                clients_df = load_clients()
+                client_opts = ["All clients"] + (
+                    clients_df["full_name"].tolist() if not clients_df.empty and "full_name" in clients_df.columns else []
+                )
+            except Exception:
+                client_opts = ["All clients"]
+            client_f = st.selectbox("Client", client_opts, key="cf_client")
 
     df = all_items.copy() if not all_items.empty else pd.DataFrame()
     if df.empty:
@@ -376,16 +383,38 @@ def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
 
     if type_f:
         df = df[df["type"].isin(type_f)]
+
     if search_q.strip():
         df = df[df["title"].str.contains(search_q.strip(), case=False, na=False)]
+
     if gender_f != "All":
-        df = df[df["metadata"].apply(lambda m: m.get("gender","") == gender_f if isinstance(m, dict) else True)]
+        def _gender_match(meta):
+            return meta.get("gender","") == gender_f if isinstance(meta, dict) else True
+        df = df[df["metadata"].apply(_gender_match)]
+
     if category_f != "All":
-        df = df[df["metadata"].apply(lambda m: m.get("category","") == category_f if isinstance(m, dict) else True)]
+        def _cat_match(meta):
+            return meta.get("category","") == category_f if isinstance(meta, dict) else True
+        df = df[df["metadata"].apply(_cat_match)]
+
     if date_from:
         df = df[df["start_date"] >= pd.Timestamp(date_from)]
     if date_to:
         df = df[df["end_date"] <= pd.Timestamp(date_to)]
+
+    # Phase 5: Client filter — only applied if client_id column exists
+    # (populated when calendar items are tagged with client relationships)
+    if client_f != "All clients" and "client_id" in df.columns:
+        try:
+            from db.operations import load_clients
+            clients_df_m = load_clients()
+            if not clients_df_m.empty and "full_name" in clients_df_m.columns and "id" in clients_df_m.columns:
+                match = clients_df_m[clients_df_m["full_name"] == client_f]
+                if not match.empty:
+                    cid = match.iloc[0]["id"]
+                    df = df[df["client_id"] == cid]
+        except Exception:
+            pass  # never crash on filter failure
 
     return df.reset_index(drop=True)
 
@@ -393,6 +422,7 @@ def _render_filters(all_items: pd.DataFrame) -> pd.DataFrame:
 # ── Main render ───────────────────────────────────────────────
 
 def render() -> None:
+    # Extra CSS for match/reg/auction pill types
     st.markdown("""
     <style>
     .pill-match   {background:rgba(63,185,80,.82); color:#e8ffe8;border-left:3px solid #4dff7c;}
@@ -410,29 +440,28 @@ def render() -> None:
     user_tz  = _get_user_tz()
     ev_names = event_names()
 
-    # ── Load raw data & conflicts ───────
+    # ── Load raw data (before filters, to get year range) ───────
     try:
         all_items_raw = load_calendar_items()
     except Exception:
         all_items_raw = pd.DataFrame()
 
+    # ── Conflict detection ─────────────────────────────────────
     try:
-        ev_df = load_events()
+        ev_df    = load_events()
         overlaps = detect_event_overlaps(ev_df)
     except Exception:
         overlaps = []
-    
     conflict_ids: set = set()
     for o in overlaps:
         for k in ("id_a","id_b"):
-            if k in o: conflict_ids.add(o[k])
+            if k in o:
+                conflict_ids.add(o[k])
 
-    # ── Filters (Above calendar, replaces expander) ────────────
-    all_items = _render_filters(all_items_raw)
-
-    # ── Nav Bar (Quick Add, Month, Year, Badges) ───────────────
+    # ── Year / month nav FIRST (Phase 3) ──────────────────────
     today    = date.today()
-    year_min, year_max = today.year, today.year + 2
+    year_min = today.year
+    year_max = today.year + 2
     if not all_items_raw.empty:
         try:
             year_min = min(year_min, int(all_items_raw["start_date"].dt.year.min()))
@@ -441,27 +470,31 @@ def render() -> None:
             pass
 
     year_list = list(range(int(year_min), int(year_max) + 1))
-    
-    st.markdown('<div style="margin-top:1.2rem; margin-bottom: 0.5rem;"></div>', unsafe_allow_html=True)
-    nav_qa, nav_m, nav_y, nav_badge = st.columns([1.5, 1.5, 1.5, 5], gap="small")
-    
-    from db.auth import can_edit as _can_edit
-    with nav_qa:
-        if _can_edit() and st.button("➕ Quick Add", key="qa_inline", use_container_width=True):
-            st.session_state["cal_selected_day"] = today
-            st.rerun()
-    with nav_m:
-        sel_month = st.selectbox("Month", list(range(1, 13)), index=today.month - 1, format_func=lambda m: MONTHS[m], key="cal_mo", label_visibility="collapsed")
-    with nav_y:
+
+    nav1, nav2, nav3 = st.columns([1, 1, 4])
+    with nav1:
         def_yr = year_list.index(today.year) if today.year in year_list else 0
-        sel_year = st.selectbox("Year", year_list, index=def_yr, key="cal_yr", label_visibility="collapsed")
-    with nav_badge:
-        badge_html = (
-            f'<span class="badge badge-red" style="margin-top:5px;display:inline-block;">{len(overlaps)} conflict(s)</span>'
-            if overlaps else
-            '<span class="badge badge-green" style="margin-top:5px;display:inline-block;">No conflicts</span>'
+        sel_year = st.selectbox("Year", year_list, index=def_yr, key="cal_yr")
+    with nav2:
+        sel_month = st.selectbox(
+            "Month", list(range(1, 13)),
+            index=today.month - 1,
+            format_func=lambda m: MONTHS[m],
+            key="cal_mo",
         )
-        st.markdown(badge_html, unsafe_allow_html=True)
+    with nav3:
+        badge_html = (
+            f'<span class="badge badge-red">{len(overlaps)} conflict(s)</span>'
+            if overlaps else
+            '<span class="badge badge-green">No conflicts</span>'
+        )
+        st.markdown(
+            f'<div style="margin-top:1.6rem;">{badge_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Filters below year/month ───────────────────────────────
+    all_items = _render_filters(all_items_raw)
 
     # ── Month slice ────────────────────────────────────────────
     last_day    = calendar.monthrange(sel_year, sel_month)[1]
@@ -476,13 +509,28 @@ def render() -> None:
                 (all_items["end_date"]   >= month_start)
             ].copy().reset_index(drop=True)
         except Exception:
-            pass
+            month_items = pd.DataFrame()
 
+    # ── Selected day (for inline add) ─────────────────────────
     selected_day: date | None = st.session_state.get("cal_selected_day")
 
+    # ── Day picker for adding items ────────────────────────────
+    from db.auth import can_edit as _can_edit
+    if _can_edit():
+        with st.expander("Add item on a specific date", expanded=(selected_day is not None)):
+            pick_col, _ = st.columns([1, 2])
+            with pick_col:
+                pick_date = st.date_input(
+                    "Select date",
+                    value=selected_day or today,
+                    key="cal_pick_date",
+                )
+            if st.button("Open Quick Add", key="open_inline"):
+                st.session_state["cal_selected_day"] = pick_date
+                st.rerun()
+
     # ── Two-column layout ──────────────────────────────────────
-    st.markdown('<div style="margin-top:1rem;"></div>', unsafe_allow_html=True)
-    cal_col, panel_col = st.columns([4, 1.2], gap="large")
+    cal_col, panel_col = st.columns([4, 1], gap="medium")
 
     with cal_col:
         st.markdown(f"""
@@ -499,9 +547,9 @@ def render() -> None:
         )
         st.markdown(_legend_html(), unsafe_allow_html=True)
 
-        # Inline Add form appended BELOW the grid
+        # Inline add form
         if selected_day and _can_edit():
-            st.markdown('<div style="margin-top:2rem;"></div>', unsafe_allow_html=True)
+            st.markdown("---")
             _inline_add_form(selected_day, ev_names)
 
     with panel_col:
