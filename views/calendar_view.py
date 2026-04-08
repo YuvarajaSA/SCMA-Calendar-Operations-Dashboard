@@ -313,7 +313,7 @@ def render() -> None:
         sel_month = st.selectbox("Month", list(range(1, 13)), index=today.month - 1, format_func=lambda m: MONTHS[m], key="cal_mo", label_visibility="collapsed")
 
     with c_filt:
-        with st.popover("⚙️ Filters", use_container_width=True):
+        with st.popover("Filters", use_container_width=True):
             type_f = st.multiselect("Item types", ["event","match","registration","auction"], default=["event","match","registration","auction"])
             category_f = st.selectbox("Category", ["All","International","Domestic","League"])
             gender_f = st.selectbox("Gender", ["All","Male","Female","Mixed"])
@@ -323,66 +323,76 @@ def render() -> None:
     with c_qa:
         from db.auth import can_edit as _can_edit
         if _can_edit():
-            with st.popover("➕ Quick Add", use_container_width=True):
+            with st.popover("Quick Add", use_container_width=True):
                 # Build smart dropdown options 
                 event_options = {}
                 if not ev_df.empty and "event_name" in ev_df.columns and "id" in ev_df.columns:
                     for _, r in ev_df.iterrows():
                         event_options[r["event_name"]] = int(r["id"])
 
-                # ROW 1: Type & Date side-by-side
-                c_t, c_d = st.columns(2)
-                with c_t:
-                    add_type = st.selectbox("Type", ["Match","Registration","Auction"], key="qa_pt", label_visibility="collapsed")
-                with c_d:
-                    sel_day = st.session_state.get("cal_selected_day", today)
-                    pick_date = st.date_input("Date", value=sel_day, key="qa_pd", label_visibility="collapsed")
+                sel_day = st.session_state.get("cal_selected_day", today)
+                
+                # Use Tabs to reduce total vertical height and prevent crashing to the top screen
+                tab_m, tab_r, tab_a = st.tabs(["Match", "Registration", "Auction"])
 
-                # ROW 2: Event linking (Clean Dropdown, NO Checkbox)
-                ev_sel = st.selectbox(
-                    "Link Event", 
-                    options=list(event_options.keys()), 
-                    index=None,                                    # Leaves box empty by default
-                    placeholder="Link to an Event (Optional)...",  # Clean instructions
-                    key="qa_pe", 
-                    label_visibility="collapsed"
-                )
-                ev_id_m = event_options.get(ev_sel) # Returns None if nothing is selected
+                # ── Match Tab ──
+                with tab_m:
+                    with st.form("qa_form_m", clear_on_submit=True):
+                        pick_date = st.date_input("Date", value=sel_day, key="qa_d_m")
+                        ev_sel = st.selectbox("Link to Event", options=list(event_options.keys()), index=None, placeholder="Select an Event (Optional)", key="qa_e_m")
+                        name = st.text_input("Match Name", value=f"Match on {pick_date}")
+                        loc  = st.text_input("Venue", placeholder="e.g. Eden Gardens (Optional)")
 
-                # FORM: Unified to be tiny vertically
-                with st.form("qa_form", clear_on_submit=True):
-                    if add_type == "Match":
-                        name = st.text_input("Match Name", value=f"Match on {pick_date}", label_visibility="collapsed")
-                        loc  = st.text_input("Venue", placeholder="Venue (Optional)", label_visibility="collapsed")
-                    elif add_type == "Registration":
-                        name = st.text_input("Notes", placeholder="Notes (Optional)", label_visibility="collapsed")
-                        loc  = ""
-                    else:  # Auction
-                        name = st.text_input("Franchise Name", placeholder="Franchise Name *", label_visibility="collapsed")
-                        loc  = st.text_input("Location", placeholder="Location (Optional)", label_visibility="collapsed")
-
-                    if st.form_submit_button("Save Item", use_container_width=True):
-                        ok, msg = False, ""
-                        if add_type == "Match":
+                        if st.form_submit_button("Save Match", use_container_width=True):
+                            ev_id_m = event_options.get(ev_sel)
                             ok, msg = add_match(ev_id_m, name, pick_date, venue=loc)
-                        elif add_type == "Registration":
-                            # Uses sel_day as start, pick_date as deadline
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop("cal_selected_day", None)
+                                load_matches.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+                # ── Registration Tab ──
+                with tab_r:
+                    with st.form("qa_form_r", clear_on_submit=True):
+                        pick_date = st.date_input("Deadline", value=sel_day, key="qa_d_r")
+                        ev_sel = st.selectbox("Link to Event", options=list(event_options.keys()), index=None, placeholder="Select an Event (Optional)", key="qa_e_r")
+                        name = st.text_input("Notes", placeholder="Additional details (Optional)")
+
+                        if st.form_submit_button("Save Registration", use_container_width=True):
+                            ev_id_m = event_options.get(ev_sel)
                             ok, msg = add_registration(ev_id_m, sel_day, pick_date, name)
-                        else:
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop("cal_selected_day", None)
+                                load_registrations.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+                # ── Auction Tab ──
+                with tab_a:
+                    with st.form("qa_form_a", clear_on_submit=True):
+                        pick_date = st.date_input("Date", value=sel_day, key="qa_d_a")
+                        ev_sel = st.selectbox("Link to Event", options=list(event_options.keys()), index=None, placeholder="Select an Event (Optional)", key="qa_e_a")
+                        name = st.text_input("Franchise Name *", placeholder="e.g. Mumbai Indians")
+                        loc  = st.text_input("Location", placeholder="e.g. Mumbai (Optional)")
+
+                        if st.form_submit_button("Save Auction", use_container_width=True):
                             if not name.strip():
                                 st.error("Franchise name required.")
                                 st.stop()
+                            ev_id_m = event_options.get(ev_sel)
                             ok, msg = add_auction(ev_id_m, name.strip(), pick_date, loc)
-
-                        if ok:
-                            st.success(msg)
-                            st.session_state.pop("cal_selected_day", None)
-                            if add_type == "Match": load_matches.clear()
-                            elif add_type == "Registration": load_registrations.clear()
-                            else: load_auctions.clear()
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop("cal_selected_day", None)
+                                load_auctions.clear()
+                                st.rerun()
+                            else:
+                                st.error(msg)
 
     # Apply Filters
     all_items = _apply_filters(all_items_raw, search_q, type_f, gender_f, category_f, date_from, date_to)
