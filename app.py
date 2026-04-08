@@ -136,17 +136,6 @@ with st.sidebar:
         </div>
     </div>""", unsafe_allow_html=True)
 
-    # Issue 10: Dark / Light mode toggle
-    light = st.toggle("Light Mode", value=st.session_state.get("theme","dark")=="light",
-                       key="theme_toggle")
-    if light:
-        st.session_state["theme"] = "light"
-        st.markdown("<style>:root{" +
-            "--bg:#f6f8fa;--surface:#fff;--surface2:#f0f2f5;--surface3:#e8eaed;" +
-            "--border:#d0d7de;--border2:#afb8c1;--text:#1f2328;--text-dim:#636c76;--muted:#636c76;" +
-            "}</style>", unsafe_allow_html=True)
-    else:
-        st.session_state["theme"] = "dark"
 
     # User card
     role      = get_role()
