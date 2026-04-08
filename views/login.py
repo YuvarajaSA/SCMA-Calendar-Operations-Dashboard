@@ -120,7 +120,7 @@ def render() -> None:
             </div>""", unsafe_allow_html=True)
 
             reset_email = st.text_input(
-                "Email address", placeholder="you@sophieagency.com",
+                "Email address", placeholder="you@sophieclairem.com",
                 key="reset_email", label_visibility="collapsed",
             )
             if st.button("Send Reset Link", use_container_width=True, key="btn_reset"):
