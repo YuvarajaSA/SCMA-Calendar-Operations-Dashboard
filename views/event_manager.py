@@ -1,3 +1,295 @@
+# # pages/event_manager.py  —  SCMA Event & Match Management
+# from __future__ import annotations
+
+# import streamlit as st
+# import pandas as pd
+# from datetime import date
+
+# from db.auth import can_edit, get_supabase_user, current_email
+# from db.operations import (
+#     load_events, load_teams, event_names, teams_for_event,
+#     add_event, load_leagues, add_league,
+#     add_match, load_matches,
+#     add_registration, load_registrations,
+#     add_auction, load_auctions,
+#     log_activity,
+# )
+
+
+# def _event_search_select(key: str) -> tuple[int | None, str]:
+#     """Search-box for event selection. Returns (event_id, event_name)."""
+#     ev_df = load_events()
+#     if ev_df.empty:
+#         st.warning("No events found. Add a Tournament/Series first.")
+#         return None, ""
+
+#     search = st.text_input("Search event", placeholder="Type to filter…", key=f"es_{key}")
+#     names  = ev_df["event_name"].tolist()
+#     if search:
+#         names = [n for n in names if search.lower() in n.lower()]
+
+#     if not names:
+#         st.warning("No matches. Try a different search term.")
+#         return None, ""
+
+#     sel_name = st.radio("Select", names[:15], key=f"er_{key}", label_visibility="collapsed")
+#     row = ev_df[ev_df["event_name"] == sel_name]
+#     if row.empty:
+#         return None, ""
+#     ev_id = int(row.iloc[0]["id"]) if "id" in row.columns else None
+#     return ev_id, sel_name
+
+
+# def _tab_tournament() -> None:
+#     st.markdown('<div class="card-title">ADD TOURNAMENT / SERIES</div>', unsafe_allow_html=True)
+
+#     leagues_df = load_leagues()
+#     league_options = {"(None)": None}
+#     if not leagues_df.empty:
+#         league_options.update({r["league_name"]: int(r["id"]) for _, r in leagues_df.iterrows()})
+
+#     with st.form("add_event_form", clear_on_submit=True):
+#         c1, c2 = st.columns(2)
+#         with c1:
+#             ev_name     = st.text_input("Event Name *", placeholder="ICC T20 World Cup 2026")
+#             ev_type     = st.selectbox("Type *", ["tournament","series"])
+#             ev_category = st.selectbox("Category *", ["International","Domestic","League"])
+#             ev_league   = st.selectbox("League", list(league_options.keys()))
+#         with c2:
+#             ev_country  = st.text_input("Country / Host *", placeholder="India")
+#             ev_gender   = st.selectbox("Gender *", ["Male","Female","Mixed"])
+#             ev_format   = st.selectbox("Format *", ["T20","ODI","Test","The Hundred","Mixed","Other"])
+
+#         c3, c4 = st.columns(2)
+#         with c3:
+#             ev_start = st.date_input("Start Date *", value=date.today())
+#         with c4:
+#             ev_end   = st.date_input("End Date *",   value=date.today())
+#         ev_notes = st.text_area("Notes", placeholder="Optional details…")
+#         submitted = st.form_submit_button("Add Event", use_container_width=True)
+
+#     if submitted:
+#         errs = []
+#         if not ev_name.strip():   errs.append("Event name required.")
+#         if not ev_country.strip(): errs.append("Country required.")
+#         if ev_start > ev_end:     errs.append("Start must be before End.")
+#         if errs:
+#             for e in errs: st.error(e)
+#         else:
+#             u = get_supabase_user()
+#             ok, msg = add_event(
+#                 ev_name.strip(), ev_type, ev_category, ev_format,
+#                 ev_start, ev_end, ev_country.strip(), ev_gender,
+#                 ev_notes.strip(), user_id=u.id if u else None,
+#             )
+#             if ok:
+#                 st.success(msg)
+#                 log_activity(u.id if u else None, current_email(), "create", "event", details={"name": ev_name})
+#             else:
+#                 st.error(msg)
+
+#     # ── Quick add league ──────────────────────────────────────
+#     with st.expander("Add a new League"):
+#         with st.form("add_league_form", clear_on_submit=True):
+#             lg_name    = st.text_input("League Name", placeholder="IPL")
+#             lg_country = st.text_input("Country",     placeholder="India")
+#             if st.form_submit_button("Add League"):
+#                 if lg_name.strip():
+#                     ok, msg = add_league(lg_name.strip(), lg_country.strip())
+#                     if ok: st.success(msg)
+#                     else:  st.error(msg)
+
+#     # ── Existing events ───────────────────────────────────────
+#     ev_df = load_events()
+#     if not ev_df.empty:
+#         st.markdown('<br><div class="card-title">EXISTING EVENTS</div>', unsafe_allow_html=True)
+#         disp = ev_df[["event_name","event_type","category","format","start_date","end_date","country","gender"]].copy()
+#         disp["start_date"] = disp["start_date"].dt.date
+#         disp["end_date"]   = disp["end_date"].dt.date
+#         disp.columns = ["Event","Type","Category","Format","Start","End","Country","Gender"]
+#         st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
+# def _tab_matches() -> None:
+#     st.markdown('<div class="card-title">ADD MATCH</div>', unsafe_allow_html=True)
+
+#     # Issue 3: Event linking is optional
+#     link_event = st.checkbox("Link to an event", value=False, key="match_link_ev")
+#     ev_id, ev_name = None, None
+#     teams, team_ids = [], {}
+
+#     if link_event:
+#         ev_id, ev_name = _event_search_select("match")
+#         if ev_id is not None:
+#             teams_df = load_teams()
+#             if not teams_df.empty and "event_name" in teams_df.columns:
+#                 ev_teams = teams_df[teams_df["event_name"] == ev_name]
+#                 if not ev_teams.empty and "id" in ev_teams.columns:
+#                     team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
+#             teams = list(team_ids.keys())
+
+#     with st.form("add_match_form", clear_on_submit=True):
+#         c1, c2 = st.columns(2)
+#         with c1:
+#             match_name = st.text_input("Match Name / Label *", placeholder="Match 1 or Team A vs Team B")
+#             match_date = st.date_input("Match Date *", value=date.today())
+#         with c2:
+#             venue = st.text_input("Venue", placeholder="Eden Gardens")
+#             notes = st.text_area("Notes", height=68)
+
+#         t1 = t2 = "—"
+#         if teams:
+#             t1 = st.selectbox("Team 1", ["—"]+teams, key="m_t1")
+#             t2 = st.selectbox("Team 2", ["—"]+teams, key="m_t2")
+
+#         submitted = st.form_submit_button("Add Match", use_container_width=True)
+
+#     if submitted:
+#         if not match_name.strip():
+#             st.error("Match name is required.")
+#         else:
+#             t1_id = team_ids.get(t1) if t1 != "—" else None
+#             t2_id = team_ids.get(t2) if t2 != "—" else None
+#             ok, msg = add_match(ev_id, match_name.strip(),
+#                                 match_date, t1_id, t2_id, venue.strip(), notes.strip())
+#             if ok:
+#                 st.success(msg)
+#                 u = get_supabase_user()
+#                 log_activity(u.id if u else None, current_email(), "create", "match",
+#                              entity_id=ev_id, details={"event": ev_name or "standalone"})
+#             else:
+#                 st.error(msg)
+
+#     # ── Existing matches ──────────────────────────────────────
+#     ma_df = load_matches(event_id=ev_id)
+#     if not ma_df.empty:
+#         st.markdown('<br><div class="card-title">MATCHES</div>', unsafe_allow_html=True)
+#         disp = ma_df[["match_name","match_date","venue"]].copy()
+#         disp["match_date"] = disp["match_date"].dt.date
+#         disp.columns = ["Match","Date","Venue"]
+#         st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
+# def _tab_registration() -> None:
+#     st.markdown('<div class="card-title">ADD REGISTRATION WINDOW</div>', unsafe_allow_html=True)
+
+#     # Issue 3: Event linking is optional
+#     link_event = st.checkbox("Link to an event", value=False, key="reg_link_ev")
+#     ev_id, ev_name = None, None
+#     if link_event:
+#         ev_id, ev_name = _event_search_select("reg")
+
+#     with st.form("add_reg_form", clear_on_submit=True):
+#         c1, c2 = st.columns(2)
+#         with c1:
+#             reg_start = st.date_input("Registration Opens *", value=date.today())
+#         with c2:
+#             reg_dead  = st.date_input("Deadline *", value=date.today())
+#         notes = st.text_area("Notes", height=68)
+#         submitted = st.form_submit_button("Add Registration Window", use_container_width=True)
+
+#     if submitted:
+#         if reg_start > reg_dead:
+#             st.error("Deadline must be after start.")
+#         else:
+#             u  = get_supabase_user()
+#             ok, msg = add_registration(ev_id, reg_start, reg_dead, notes.strip(),
+#                                        user_id=u.id if u else None)
+#             if ok:
+#                 st.success(msg)
+#                 log_activity(u.id if u else None, current_email(), "create", "registration",
+#                              entity_id=ev_id, details={"event": ev_name or "standalone"})
+#             else:
+#                 st.error(msg)
+
+#     reg_df = load_registrations()
+#     if not reg_df.empty:
+#         show_df = reg_df.copy()
+#         if ev_id and "event_id" in show_df.columns:
+#             show_df = show_df[show_df["event_id"] == ev_id]
+#         if not show_df.empty:
+#             st.markdown('<br><div class="card-title">EXISTING WINDOWS</div>', unsafe_allow_html=True)
+#             cols = [c for c in ["start_date","deadline","notes"] if c in show_df.columns]
+#             d = show_df[cols].copy()
+#             if "start_date" in d.columns: d["start_date"] = d["start_date"].dt.date
+#             if "deadline"   in d.columns: d["deadline"]   = d["deadline"].dt.date
+#             d.columns = [c.replace("_"," ").title() for c in cols]
+#             st.dataframe(d, use_container_width=True, hide_index=True)
+
+
+# def _tab_auction() -> None:
+#     st.markdown('<div class="card-title">ADD AUCTION</div>', unsafe_allow_html=True)
+
+#     # Issue 3: Event linking is optional
+#     link_event = st.checkbox("Link to an event", value=False, key="auc_link_ev")
+#     ev_id, ev_name = None, None
+#     if link_event:
+#         ev_id, ev_name = _event_search_select("auction")
+
+#     with st.form("add_auction_form", clear_on_submit=True):
+#         c1, c2 = st.columns(2)
+#         with c1:
+#             franchise = st.text_input("Franchise Name *", placeholder="Mumbai Indians")
+#             auc_date  = st.date_input("Auction Date *", value=date.today())
+#         with c2:
+#             location = st.text_input("Location", placeholder="Mumbai")
+#             notes    = st.text_area("Notes", height=68)
+#         submitted = st.form_submit_button("Add Auction", use_container_width=True)
+
+#     if submitted:
+#         if not franchise.strip():
+#             st.error("Franchise name required.")
+#         else:
+#             ok, msg = add_auction(ev_id, franchise.strip(), auc_date,
+#                                    location.strip(), notes.strip())
+#             if ok:
+#                 st.success(msg)
+#                 u = get_supabase_user()
+#                 log_activity(u.id if u else None, current_email(), "create", "auction",
+#                              entity_id=ev_id, details={"event": ev_name or "standalone"})
+#             else:
+#                 st.error(msg)
+
+#     au_df = load_auctions()
+#     if not au_df.empty:
+#         show_df = au_df.copy()
+#         if ev_id and "event_id" in show_df.columns:
+#             show_df = show_df[show_df["event_id"] == ev_id]
+#         if not show_df.empty:
+#             st.markdown('<br><div class="card-title">EXISTING AUCTIONS</div>', unsafe_allow_html=True)
+#             cols = [c for c in ["franchise_name","auction_date","location"] if c in show_df.columns]
+#             d = show_df[cols].copy()
+#             if "auction_date" in d.columns: d["auction_date"] = d["auction_date"].dt.date
+#             d.columns = [c.replace("_"," ").title() for c in cols]
+#             st.dataframe(d, use_container_width=True, hide_index=True)
+
+
+# def render() -> None:
+#     st.markdown("""
+#     <div class="page-header">
+#         <div><h1>EVENT MANAGER</h1>
+#         <p>Tournaments · Matches · Registrations · Auctions</p></div>
+#     </div>""", unsafe_allow_html=True)
+
+#     if not can_edit():
+#         st.markdown("""
+#         <div class="alert-box alert-warn">
+#             <div class="icon">🔒</div>
+#             <div class="body"><div class="title">View-Only Access</div>
+#             Contact an admin to request edit access.</div>
+#         </div>""", unsafe_allow_html=True)
+#         return
+
+#     tab1, tab2, tab3, tab4 = st.tabs([
+#         "Tournament / Series", "Matches", "Registration", "Auctions"
+#     ])
+#     with tab1: _tab_tournament()
+#     with tab2: _tab_matches()
+#     with tab3: _tab_registration()
+#     with tab4: _tab_auction()
+
+
+
 # pages/event_manager.py  —  SCMA Event & Match Management
 from __future__ import annotations
 
@@ -15,29 +307,28 @@ from db.operations import (
     log_activity,
 )
 
-
-def _event_search_select(key: str) -> tuple[int | None, str]:
-    """Search-box for event selection. Returns (event_id, event_name)."""
+def _render_event_dropdown(key: str) -> tuple[int | None, str]:
+    """Clean, searchable dropdown for event selection without checkboxes."""
     ev_df = load_events()
     if ev_df.empty:
-        st.warning("No events found. Add a Tournament/Series first.")
         return None, ""
+        
+    event_options = {}
+    for _, r in ev_df.iterrows():
+        if "event_name" in r and "id" in r:
+            event_options[r["event_name"]] = int(r["id"])
 
-    search = st.text_input("Search event", placeholder="Type to filter…", key=f"es_{key}")
-    names  = ev_df["event_name"].tolist()
-    if search:
-        names = [n for n in names if search.lower() in n.lower()]
-
-    if not names:
-        st.warning("No matches. Try a different search term.")
-        return None, ""
-
-    sel_name = st.radio("Select", names[:15], key=f"er_{key}", label_visibility="collapsed")
-    row = ev_df[ev_df["event_name"] == sel_name]
-    if row.empty:
-        return None, ""
-    ev_id = int(row.iloc[0]["id"]) if "id" in row.columns else None
-    return ev_id, sel_name
+    sel = st.selectbox(
+        "Event",
+        options=list(event_options.keys()),
+        index=None,
+        placeholder="Select an Event (Optional)...",
+        key=f"ev_sel_{key}"
+    )
+    
+    if sel:
+        return event_options[sel], sel
+    return None, ""
 
 
 def _tab_tournament() -> None:
@@ -47,57 +338,83 @@ def _tab_tournament() -> None:
     league_options = {"(None)": None}
     if not leagues_df.empty:
         league_options.update({r["league_name"]: int(r["id"]) for _, r in leagues_df.iterrows()})
+    
+    # Add inline creation option
+    league_options["➕ Add New League"] = "NEW"
 
-    with st.form("add_event_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            ev_name     = st.text_input("Event Name *", placeholder="ICC T20 World Cup 2026")
-            ev_type     = st.selectbox("Type *", ["tournament","series"])
-            ev_category = st.selectbox("Category *", ["International","Domestic","League"])
-            ev_league   = st.selectbox("League", list(league_options.keys()))
-        with c2:
-            ev_country  = st.text_input("Country / Host *", placeholder="India")
-            ev_gender   = st.selectbox("Gender *", ["Male","Female","Mixed"])
-            ev_format   = st.selectbox("Format *", ["T20","ODI","Test","The Hundred","Mixed","Other"])
+    # Using standard columns (no st.form) to allow real-time inline league fields
+    c1, c2 = st.columns(2)
+    with c1:
+        ev_name     = st.text_input("Event Name *", placeholder="ICC T20 World Cup 2026")
+        ev_type     = st.selectbox("Type *", ["tournament","series"])
+        ev_category = st.selectbox("Category *", ["International","Domestic","League"])
+        ev_league   = st.selectbox("League", list(league_options.keys()))
+        
+        new_lg_name = ""
+        new_lg_country = ""
+        if league_options[ev_league] == "NEW":
+            st.markdown("<div style='padding:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; margin-bottom:1rem;'>", unsafe_allow_html=True)
+            new_lg_name = st.text_input("New League Name *", placeholder="e.g. IPL")
+            new_lg_country = st.text_input("New League Country *", placeholder="e.g. India")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        c3, c4 = st.columns(2)
-        with c3:
-            ev_start = st.date_input("Start Date *", value=date.today())
-        with c4:
-            ev_end   = st.date_input("End Date *",   value=date.today())
-        ev_notes = st.text_area("Notes", placeholder="Optional details…")
-        submitted = st.form_submit_button("Add Event", use_container_width=True)
+    with c2:
+        ev_country  = st.text_input("Country / Host *", placeholder="India")
+        ev_gender   = st.selectbox("Gender *", ["Male","Female","Mixed"])
+        ev_format   = st.selectbox("Format *", ["T20","ODI","Test","The Hundred","Mixed","Other"])
+
+    c3, c4 = st.columns(2)
+    with c3:
+        ev_start = st.date_input("Start Date *", value=date.today())
+    with c4:
+        ev_end   = st.date_input("End Date *",   value=date.today())
+    
+    ev_notes = st.text_area("Notes", placeholder="Optional details…")
+    
+    submitted = st.button("Add Event", type="primary", use_container_width=True)
 
     if submitted:
         errs = []
         if not ev_name.strip():   errs.append("Event name required.")
         if not ev_country.strip(): errs.append("Country required.")
         if ev_start > ev_end:     errs.append("Start must be before End.")
+        
+        league_id = league_options[ev_league]
+        if league_id == "NEW":
+            if not new_lg_name.strip() or not new_lg_country.strip():
+                errs.append("League Name and Country are required for a new league.")
+        
         if errs:
             for e in errs: st.error(e)
         else:
+            # Handle inline league creation
+            if league_id == "NEW":
+                ok_lg, msg_lg = add_league(new_lg_name.strip(), new_lg_country.strip())
+                if not ok_lg:
+                    st.error(msg_lg)
+                    st.stop()
+                
+                # Fetch newly created league id
+                updated_leagues = load_leagues()
+                try:
+                    league_id = int(updated_leagues[updated_leagues["league_name"] == new_lg_name.strip()].iloc[0]["id"])
+                except Exception:
+                    league_id = None
+            
             u = get_supabase_user()
             ok, msg = add_event(
                 ev_name.strip(), ev_type, ev_category, ev_format,
                 ev_start, ev_end, ev_country.strip(), ev_gender,
                 ev_notes.strip(), user_id=u.id if u else None,
+                league_id=league_id
             )
+            
             if ok:
                 st.success(msg)
                 log_activity(u.id if u else None, current_email(), "create", "event", details={"name": ev_name})
+                st.rerun()  # Clears inputs natively
             else:
                 st.error(msg)
-
-    # ── Quick add league ──────────────────────────────────────
-    with st.expander("Add a new League"):
-        with st.form("add_league_form", clear_on_submit=True):
-            lg_name    = st.text_input("League Name", placeholder="IPL")
-            lg_country = st.text_input("Country",     placeholder="India")
-            if st.form_submit_button("Add League"):
-                if lg_name.strip():
-                    ok, msg = add_league(lg_name.strip(), lg_country.strip())
-                    if ok: st.success(msg)
-                    else:  st.error(msg)
 
     # ── Existing events ───────────────────────────────────────
     ev_df = load_events()
@@ -113,20 +430,17 @@ def _tab_tournament() -> None:
 def _tab_matches() -> None:
     st.markdown('<div class="card-title">ADD MATCH</div>', unsafe_allow_html=True)
 
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="match_link_ev")
-    ev_id, ev_name = None, None
+    # Replaced checkbox with dropdown pattern
+    ev_id, ev_name = _render_event_dropdown("match")
+    
     teams, team_ids = [], {}
-
-    if link_event:
-        ev_id, ev_name = _event_search_select("match")
-        if ev_id is not None:
-            teams_df = load_teams()
-            if not teams_df.empty and "event_name" in teams_df.columns:
-                ev_teams = teams_df[teams_df["event_name"] == ev_name]
-                if not ev_teams.empty and "id" in ev_teams.columns:
-                    team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
-            teams = list(team_ids.keys())
+    if ev_id is not None:
+        teams_df = load_teams()
+        if not teams_df.empty and "event_name" in teams_df.columns:
+            ev_teams = teams_df[teams_df["event_name"] == ev_name]
+            if not ev_teams.empty and "id" in ev_teams.columns:
+                team_ids = {r["team_name"]: int(r["id"]) for _, r in ev_teams.iterrows()}
+        teams = list(team_ids.keys())
 
     with st.form("add_match_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -138,9 +452,14 @@ def _tab_matches() -> None:
             notes = st.text_area("Notes", height=68)
 
         t1 = t2 = "—"
-        if teams:
-            t1 = st.selectbox("Team 1", ["—"]+teams, key="m_t1")
-            t2 = st.selectbox("Team 2", ["—"]+teams, key="m_t2")
+        
+        # Only show team selectors if an event was selected
+        if ev_id is not None:
+            if teams:
+                t1 = st.selectbox("Team 1", ["—"]+teams, key="m_t1")
+                t2 = st.selectbox("Team 2", ["—"]+teams, key="m_t2")
+            else:
+                st.info("No teams loaded for this event yet.")
 
         submitted = st.form_submit_button("Add Match", use_container_width=True)
 
@@ -173,11 +492,8 @@ def _tab_matches() -> None:
 def _tab_registration() -> None:
     st.markdown('<div class="card-title">ADD REGISTRATION WINDOW</div>', unsafe_allow_html=True)
 
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="reg_link_ev")
-    ev_id, ev_name = None, None
-    if link_event:
-        ev_id, ev_name = _event_search_select("reg")
+    # Replaced checkbox with dropdown pattern
+    ev_id, ev_name = _render_event_dropdown("reg")
 
     with st.form("add_reg_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -220,11 +536,8 @@ def _tab_registration() -> None:
 def _tab_auction() -> None:
     st.markdown('<div class="card-title">ADD AUCTION</div>', unsafe_allow_html=True)
 
-    # Issue 3: Event linking is optional
-    link_event = st.checkbox("Link to an event", value=False, key="auc_link_ev")
-    ev_id, ev_name = None, None
-    if link_event:
-        ev_id, ev_name = _event_search_select("auction")
+    # Replaced checkbox with dropdown pattern
+    ev_id, ev_name = _render_event_dropdown("auction")
 
     with st.form("add_auction_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
