@@ -115,18 +115,42 @@ def _nav_btn(label: str, icon: str = "") -> None:
 
 
 # ── Sidebar ───────────────────────────────────────────────────
+# with st.sidebar:
+#     # Logo (from Supabase Storage public bucket "assets")
+#     logo_url = st.secrets.get("supabase", {}).get("logo_url", "")
+#     if logo_url:
+#         try:
+#             st.image(logo_url, width=95)
+#         except Exception:
+#             pass
+
+#     # Brand text
+#     st.markdown("""
+#     <div style="padding:.5rem 0 .8rem; text-align:center;">
+#         <div style="font-family:'Bebas Neue',sans-serif;font-size:1.5rem;
+#                     color:#f0b429;letter-spacing:.06em;line-height:1.1;">
+#             SCMA CALENDAR
+#         </div>
+#         <div style="font-size:.65rem;color:#8b949e;letter-spacing:.14em;margin-top:.2rem;">
+#             SOPHIE CLAIRE M AGENCY
+#         </div>
+#     </div>""", unsafe_allow_html=True)
+
+
+#     # User card
+#     role      = get_role()
+# ── Sidebar ───────────────────────────────────────────────────
 with st.sidebar:
     # Logo (from Supabase Storage public bucket "assets")
     logo_url = st.secrets.get("supabase", {}).get("logo_url", "")
-    if logo_url:
-        try:
-            st.image(logo_url, width=95)
-        except Exception:
-            pass
+    
+    # Inject the image directly into the centered HTML block if it exists
+    logo_html = f'<div style="margin-bottom: 0.8rem;"><img src="{logo_url}" width="95" style="border-radius: 8px;"></div>' if logo_url else ""
 
-    # Brand text
-    st.markdown("""
+    # Brand text & Logo combined
+    st.markdown(f"""
     <div style="padding:.5rem 0 .8rem; text-align:center;">
+        {logo_html}
         <div style="font-family:'Bebas Neue',sans-serif;font-size:1.5rem;
                     color:#f0b429;letter-spacing:.06em;line-height:1.1;">
             SCMA CALENDAR
@@ -139,6 +163,7 @@ with st.sidebar:
 
     # User card
     role      = get_role()
+    # ... (Keep the rest of your sidebar code exactly as it is) ...
     role_cls  = {"admin":"role-admin","editor":"role-editor","viewer":"role-viewer"}.get(role, "role-viewer")
     role_icon = {"admin":"👑","editor":"✏️","viewer":"👁"}.get(role, "👁")
 
