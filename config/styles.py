@@ -18,17 +18,9 @@ _CSS = """
 }
 
 html,body,[class*="css"] { font-family:'DM Sans',sans-serif; background:var(--bg)!important; color:var(--text)!important; font-size:14px; }
-
-/* FORCE FULL WIDTH EXPANSION WHEN SIDEBAR CLOSES */
-[data-testid="stAppViewBlockContainer"], .block-container { 
-    max-width: 100% !important; 
-    width: 100% !important; 
-    padding: 1.5rem 2rem 3rem !important; 
-}
-section.main > div { 
-    width: 100% !important; 
-    max-width: 100% !important; 
-}
+.main .block-container    { padding:1.5rem 1.5rem 3rem!important; max-width:100%!important; width:100%!important; }
+section.main > div { width:100% !important; }
+.block-container          { padding-top:1.5rem!important; }
 hr { border-color:var(--border)!important; }
 
 /* SIDEBAR */
