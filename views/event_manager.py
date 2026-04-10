@@ -178,12 +178,13 @@ def _tab_matches() -> None:
                 "Match Name / Label *", placeholder="Match 1 — India vs Pakistan"
             )
             match_date = st.date_input("Match Date *", value=date.today())
+             # Time + timezone row
+            sel_time, sel_tz = _time_tz_row("match", user_tz)
         with c2:
             venue = st.text_input("Venue", placeholder="Eden Gardens, Kolkata")
             notes = st.text_area("Notes", height=68)
 
-        # Time + timezone row
-        sel_time, sel_tz = _time_tz_row("match", user_tz)
+       
 
         t1 = t2 = "—"
         if ev_id is not None:
