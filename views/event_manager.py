@@ -654,11 +654,12 @@ def _tab_tournament(ev_df) -> None:
             ev_league   = st.selectbox("League", list(league_options.keys()))
         with c2:
             ev_country  = st.text_input("Country / Host *", placeholder="India")
+            ev_timezone = st.selectbox("Event Timezone *", TIMEZONES)
             ev_gender   = st.selectbox("Gender *", ["Male", "Female", "Mixed"])
             ev_format   = st.selectbox(
-                "Format *", ["T20", "ODI", "Test", "The Hundred", "Mixed", "Other"]
+                "Format *", ["T20I", "ODI", "Test", "The Hundred","T20","T10","List-A","First-Class" ,"Mixed", "Other"]
             )
-            ev_timezone = st.selectbox("Event Timezone *", TIMEZONES)
+            
 
         c3, c4 = st.columns(2)
         with c3:
