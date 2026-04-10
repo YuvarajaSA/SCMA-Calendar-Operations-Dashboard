@@ -13,6 +13,13 @@ from db.operations import (
 )
 from utils.datetime_utils import validate_time_str, TIMEZONES
 
+def _parse_time_flexible(val: str) -> str:
+                try:
+                    import pandas as pd
+                    t = pd.to_datetime(val).time()
+                    return f"{t.hour:02d}:{t.minute:02d}"
+                except Exception:
+                    return "00:00"
 
 # ── Shared helpers ────────────────────────────────────────────
 
@@ -96,7 +103,7 @@ def _tab_matches() -> None:
         team_map: dict[str, dict[str, int]] = {}
         if not teams_df.empty and "event_name" in teams_df.columns:
             for _, r in teams_df.iterrows():
-                team_map.setdefault(r["event_name"], {})[r["team_name"]] = int(r.get("id", 0))
+                team_map.setdefault(r["event_name"], {})[r["team_name"].strip().lower()] = int(r.get("id", 0))
 
         rows:  list[dict] = []
         warns: list[str]  = []
@@ -110,20 +117,20 @@ def _tab_matches() -> None:
                 continue
 
             # Parse date — keep as date object, never strip time yet
-            try:
-                m_date = pd.to_datetime(r["match_date"]).date()
-            except Exception:
+            parsed_date = pd.to_datetime(r["match_date"], errors="coerce")
+
+            if pd.isna(parsed_date):
                 warns.append(f"Row {row_num}: invalid match_date '{r['match_date']}' — skipped.")
                 continue
 
+            m_date = parsed_date.date()
+
             # Time resolution — strict validation, no silent fallback
             raw_time = str(r.get("match_time", "")).strip() if "match_time" in df.columns else ""
-            if raw_time and not validate_time_str(raw_time):
-                warns.append(
-                    f"Row {row_num}: invalid match_time '{raw_time}' "
-                    f"(expected HH:MM, 00:00–23:59) — defaulting to 00:00."
-                )
-                raw_time = "00:00"
+            
+                
+            raw_time = _parse_time_flexible(r.get("match_time", ""))
+            
             if not raw_time:
                 raw_time = "00:00"
 
@@ -139,8 +146,8 @@ def _tab_matches() -> None:
                 raw_tz = default_tz
 
             # Team resolution — warn explicitly when name doesn't match
-            t1n   = str(r.get("team1", "")).strip()
-            t2n   = str(r.get("team2", "")).strip()
+            t1n   = str(r.get("team1", "")).strip().lower()
+            t2n   = str(r.get("team2", "")).strip().lower()
             t1_id = team_map.get(ev_name, {}).get(t1n)
             t2_id = team_map.get(ev_name, {}).get(t2n)
             if t1n and not t1_id:
@@ -183,15 +190,28 @@ def _tab_teams() -> None:
         optional=[],
     )
 
-    file = st.file_uploader("Upload teams CSV", type=["csv"], key="csv_teams")
+    file = st.file_uploader(
+            "Upload Teams file",
+            type=["csv", "xlsx", "json"]
+        )
     if file is None:
         return
+    def _read_file(file):
+        name = file.name.lower()
 
-    try:
-        df = pd.read_csv(file)
-    except Exception as e:
-        st.error(f"Could not read file: {e}")
-        return
+        if name.endswith(".csv"):
+            return pd.read_csv(file)
+
+        elif name.endswith(".xlsx"):
+            return pd.read_excel(file)
+
+        elif name.endswith(".json"):
+            return pd.read_json(file)
+
+        else:
+            raise ValueError("Unsupported file type")
+    df = _read_file(file)
+    
 
     missing = _validate_cols(df, ["event_name", "team_name"])
     if missing:
