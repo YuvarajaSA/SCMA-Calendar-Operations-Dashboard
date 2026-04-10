@@ -25,7 +25,31 @@ import pytz
 # Full IANA list from pytz — keeps backward-compat for any code
 # that does `from utils.datetime_utils import TIMEZONES`.
 TIMEZONES: list[str] = sorted(pytz.all_timezones)
+COUNTRY_TZ_MAP = {
+    # Core
+    "india": "Asia/Kolkata",
+    "england": "Europe/London",
+    "australia": "Australia/Sydney",
 
+    # Caribbean (granular)
+    "barbados": "America/Barbados",
+    "trinidad and tobago": "America/Port_of_Spain",
+    "st lucia": "America/St_Lucia",
+    "jamaica": "America/Jamaica",
+    "guyana": "America/Guyana",
+
+    # Regional fallback
+    "west indies": "America/Port_of_Spain",
+    "caribbean": "America/Port_of_Spain",
+}
+
+VENUE_TZ_MAP = {
+    "mindoo phillip park": "America/St_Lucia",
+    "daren sammy stadium": "America/St_Lucia",
+    "gros islet": "America/St_Lucia",
+    "queen's park oval": "America/Port_of_Spain",
+    "kensington oval": "America/Barbados",
+}
 _UTC = pytz.UTC
 
 
@@ -186,3 +210,48 @@ def time_options(step_minutes: int = 15) -> list[str]:
         for m in range(0, 60, step_minutes):
             opts.append(f"{h:02d}:{m:02d}")
     return opts
+
+def resolve_timezone(
+    tz_name: str | None = None,
+    event_tz: str | None = None,
+    country: str | None = None,
+    venue: str | None = None,
+) -> str:
+    """
+    Smart timezone resolver.
+
+    Priority:
+    1. Explicit timezone (user input)
+    2. Event timezone
+    3. Venue-based detection
+    4. Country-based detection
+    5. Default UTC
+    """
+
+    # 1. Direct input
+    if tz_name:
+        try:
+            pytz.timezone(tz_name)
+            return tz_name
+        except Exception:
+            pass
+
+    # 2. Event timezone
+    if event_tz:
+        return event_tz
+
+    # 3. Venue detection
+    if venue:
+        v = venue.lower()
+        for key, tz in VENUE_TZ_MAP.items():
+            if key in v:
+                return tz
+
+    # 4. Country detection
+    if country:
+        c = country.lower()
+        if c in COUNTRY_TZ_MAP:
+            return COUNTRY_TZ_MAP[c]
+
+    # 5. Fallback
+    return "UTC"
