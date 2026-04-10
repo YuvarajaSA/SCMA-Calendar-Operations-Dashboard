@@ -1,4 +1,4 @@
-# pages/csv_upload.py  —  SCMA CSV Upload System
+# views/csv_upload.py  —  SCMA CSV Upload System
 from __future__ import annotations
 
 import streamlit as st
@@ -11,21 +11,57 @@ from db.operations import (
     add_match, add_team, add_player_to_squad,
     bulk_add_matches,
 )
+from utils.datetime_utils import validate_time_str, TIMEZONES
 
+
+# ── Shared helpers ────────────────────────────────────────────
 
 def _validate_cols(df: pd.DataFrame, required: list[str]) -> list[str]:
     return [c for c in required if c not in df.columns]
 
 
-def _tab_matches() -> None:
-    st.markdown("""
+def _schema_info(required: list[str], optional: list[str]) -> None:
+    req_str = ", ".join(f"<b>{c}</b>" for c in required)
+    opt_str = ", ".join(optional)
+    st.markdown(f"""
     <div class="alert-box alert-info">
         <div class="icon">ℹ️</div>
-        <div class="body">
-            <b>Required columns:</b> event_name, match_date, team1, team2<br>
-            <b>Optional:</b> match_name, venue
+        <div class="body" style="font-size:.82rem;">
+            <b>Required:</b> {req_str}<br>
+            <b>Optional:</b> {opt_str}
         </div>
     </div>""", unsafe_allow_html=True)
+
+
+# ── Matches Tab ───────────────────────────────────────────────
+
+def _tab_matches() -> None:
+    """
+    CSV schema
+    ──────────
+    Required : event_name, match_date, team1, team2
+    Optional : match_name, venue, match_time (HH:MM), timezone (IANA)
+
+    Behaviour
+    ─────────
+    - match_time missing / empty  → "00:00"
+    - timezone  missing / empty   → "UTC"
+    - Invalid match_time format   → warning + row skipped
+    - match_datetime is derived via datetime_utils.to_utc()
+      inside bulk_add_matches(); time is never silently discarded.
+    """
+    _schema_info(
+        required=["event_name", "match_date", "team1", "team2"],
+        optional=["match_name", "venue", "match_time (HH:MM)", "timezone (IANA)"],
+    )
+
+    # Default timezone selector applied to all rows missing a timezone column
+    default_tz = st.selectbox(
+        "Default timezone (used when 'timezone' column is absent or blank)",
+        TIMEZONES,
+        index=0,
+        key="csv_match_tz",
+    )
 
     file = st.file_uploader("Upload matches CSV", type=["csv"], key="csv_matches")
     if file is None:
@@ -37,7 +73,7 @@ def _tab_matches() -> None:
         st.error(f"Could not read file: {e}")
         return
 
-    missing = _validate_cols(df, ["event_name","match_date","team1","team2"])
+    missing = _validate_cols(df, ["event_name", "match_date", "team1", "team2"])
     if missing:
         st.error(f"Missing required columns: {', '.join(missing)}")
         return
@@ -53,41 +89,80 @@ def _tab_matches() -> None:
             st.error("No events in database. Add events first.")
             return
 
-        ev_map = {}
+        ev_map: dict[str, int] = {}
         if not ev_df.empty and "event_name" in ev_df.columns and "id" in ev_df.columns:
             ev_map = {r["event_name"]: int(r["id"]) for _, r in ev_df.iterrows()}
 
         team_map: dict[str, dict[str, int]] = {}
         if not teams_df.empty and "event_name" in teams_df.columns:
             for _, r in teams_df.iterrows():
-                team_map.setdefault(r["event_name"],{})[r["team_name"]] = int(r.get("id",0))
+                team_map.setdefault(r["event_name"], {})[r["team_name"]] = int(r.get("id", 0))
 
-        rows, warns = [], []
+        rows:  list[dict] = []
+        warns: list[str]  = []
+
         for i, r in df.iterrows():
-            ev_name = str(r.get("event_name","")).strip()
-            ev_id   = ev_map.get(ev_name)
+            row_num  = int(i) + 1
+            ev_name  = str(r.get("event_name", "")).strip()
+            ev_id    = ev_map.get(ev_name)
             if not ev_id:
-                warns.append(f"Row {i+1}: event '{ev_name}' not found — skipped.")
+                warns.append(f"Row {row_num}: event '{ev_name}' not found — skipped.")
                 continue
 
+            # Parse date — keep as date object, never strip time yet
             try:
                 m_date = pd.to_datetime(r["match_date"]).date()
             except Exception:
-                warns.append(f"Row {i+1}: invalid match_date '{r['match_date']}' — skipped.")
+                warns.append(f"Row {row_num}: invalid match_date '{r['match_date']}' — skipped.")
                 continue
 
-            t1n = str(r.get("team1","")).strip()
-            t2n = str(r.get("team2","")).strip()
-            t1_id = team_map.get(ev_name,{}).get(t1n)
-            t2_id = team_map.get(ev_name,{}).get(t2n)
+            # Time resolution — strict validation, no silent fallback
+            raw_time = str(r.get("match_time", "")).strip() if "match_time" in df.columns else ""
+            if raw_time and not validate_time_str(raw_time):
+                warns.append(
+                    f"Row {row_num}: invalid match_time '{raw_time}' "
+                    f"(expected HH:MM, 00:00–23:59) — defaulting to 00:00."
+                )
+                raw_time = "00:00"
+            if not raw_time:
+                raw_time = "00:00"
+
+            # Timezone resolution
+            raw_tz = str(r.get("timezone", "")).strip() if "timezone" in df.columns else ""
+            if raw_tz and raw_tz not in TIMEZONES:
+                warns.append(
+                    f"Row {row_num}: unrecognised timezone '{raw_tz}' — "
+                    f"using default '{default_tz}'."
+                )
+                raw_tz = default_tz
+            if not raw_tz:
+                raw_tz = default_tz
+
+            # Team resolution — warn explicitly when name doesn't match
+            t1n   = str(r.get("team1", "")).strip()
+            t2n   = str(r.get("team2", "")).strip()
+            t1_id = team_map.get(ev_name, {}).get(t1n)
+            t2_id = team_map.get(ev_name, {}).get(t2n)
+            if t1n and not t1_id:
+                warns.append(
+                    f"Row {row_num}: team '{t1n}' not found in '{ev_name}' — "
+                    f"team1_id will be NULL."
+                )
+            if t2n and not t2_id:
+                warns.append(
+                    f"Row {row_num}: team '{t2n}' not found in '{ev_name}' — "
+                    f"team2_id will be NULL."
+                )
 
             rows.append({
                 "event_id":   ev_id,
-                "match_name": str(r.get("match_name","")).strip() or f"{t1n} vs {t2n}",
+                "match_name": str(r.get("match_name", "")).strip() or f"{t1n} vs {t2n}",
                 "match_date": m_date,
+                "match_time": raw_time,
+                "timezone":   raw_tz,
                 "team1_id":   t1_id,
                 "team2_id":   t2_id,
-                "venue":      str(r.get("venue","")).strip(),
+                "venue":      str(r.get("venue", "")).strip(),
             })
 
         if rows:
@@ -100,12 +175,13 @@ def _tab_matches() -> None:
             st.error("No valid rows to import.")
 
 
+# ── Teams Tab ─────────────────────────────────────────────────
+
 def _tab_teams() -> None:
-    st.markdown("""
-    <div class="alert-box alert-info">
-        <div class="icon">ℹ️</div>
-        <div class="body"><b>Required columns:</b> event_name, team_name</div>
-    </div>""", unsafe_allow_html=True)
+    _schema_info(
+        required=["event_name", "team_name"],
+        optional=[],
+    )
 
     file = st.file_uploader("Upload teams CSV", type=["csv"], key="csv_teams")
     if file is None:
@@ -117,7 +193,7 @@ def _tab_teams() -> None:
         st.error(f"Could not read file: {e}")
         return
 
-    missing = _validate_cols(df, ["event_name","team_name"])
+    missing = _validate_cols(df, ["event_name", "team_name"])
     if missing:
         st.error(f"Missing required columns: {', '.join(missing)}")
         return
@@ -127,26 +203,27 @@ def _tab_teams() -> None:
     if st.button("Import Teams", use_container_width=True, key="imp_teams"):
         ok_count, warns = 0, []
         for i, r in df.iterrows():
-            ev_name   = str(r.get("event_name","")).strip()
-            team_name = str(r.get("team_name","")).strip()
+            ev_name   = str(r.get("event_name", "")).strip()
+            team_name = str(r.get("team_name", "")).strip()
             if not ev_name or not team_name:
-                warns.append(f"Row {i+1}: empty value — skipped.")
+                warns.append(f"Row {int(i)+1}: empty value — skipped.")
                 continue
             ok, msg = add_team(ev_name, team_name)
             if ok:
                 ok_count += 1
             else:
-                warns.append(f"Row {i+1}: {msg}")
+                warns.append(f"Row {int(i)+1}: {msg}")
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} team(s).")
 
 
+# ── Squad Tab ─────────────────────────────────────────────────
+
 def _tab_squad() -> None:
-    st.markdown("""
-    <div class="alert-box alert-info">
-        <div class="icon">ℹ️</div>
-        <div class="body"><b>Required columns:</b> event_name, team_name, player_name</div>
-    </div>""", unsafe_allow_html=True)
+    _schema_info(
+        required=["event_name", "team_name", "player_name"],
+        optional=[],
+    )
 
     file = st.file_uploader("Upload squad CSV", type=["csv"], key="csv_squad")
     if file is None:
@@ -158,7 +235,7 @@ def _tab_squad() -> None:
         st.error(f"Could not read file: {e}")
         return
 
-    missing = _validate_cols(df, ["event_name","team_name","player_name"])
+    missing = _validate_cols(df, ["event_name", "team_name", "player_name"])
     if missing:
         st.error(f"Missing required columns: {', '.join(missing)}")
         return
@@ -168,20 +245,22 @@ def _tab_squad() -> None:
     if st.button("Import Squad", use_container_width=True, key="imp_squad"):
         ok_count, warns = 0, []
         for i, r in df.iterrows():
-            ev_name   = str(r.get("event_name","")).strip()
-            team_name = str(r.get("team_name","")).strip()
-            player    = str(r.get("player_name","")).strip()
+            ev_name   = str(r.get("event_name", "")).strip()
+            team_name = str(r.get("team_name", "")).strip()
+            player    = str(r.get("player_name", "")).strip()
             if not ev_name or not team_name or not player:
-                warns.append(f"Row {i+1}: empty value — skipped.")
+                warns.append(f"Row {int(i)+1}: empty value — skipped.")
                 continue
             ok, msg = add_player_to_squad(player, ev_name, team_name)
             if ok:
                 ok_count += 1
             else:
-                warns.append(f"Row {i+1}: {msg}")
+                warns.append(f"Row {int(i)+1}: {msg}")
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} squad record(s).")
 
+
+# ── Render ────────────────────────────────────────────────────
 
 def render() -> None:
     st.markdown("""

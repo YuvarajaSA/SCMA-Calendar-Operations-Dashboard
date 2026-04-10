@@ -37,7 +37,6 @@ def load_events(gender: str | None = None, category: str | None = None) -> pd.Da
     except Exception:
         df = pd.DataFrame()
 
-    # Ensure every required column exists before any caller touches them
     for col in _REQUIRED_EVENT_COLS:
         if col not in df.columns:
             df[col] = ""
@@ -122,6 +121,7 @@ def add_event(
     name: str, etype: str, category: str, fmt: str,
     start: date, end: date, country: str, gender: str,
     notes: str = "", user_id: str | None = None,
+    league_id: int | None = None,
 ) -> tuple[bool, str]:
     sb = get_client()
     try:
@@ -132,6 +132,8 @@ def add_event(
         }
         if user_id:
             payload["created_by"] = user_id
+        if league_id is not None:
+            payload["league_id"] = league_id
         sb.table("events").insert(payload).execute()
         load_events.clear()
         return True, f"✅ Event **{name}** added."
@@ -236,7 +238,7 @@ def bulk_add_players(players: list[str], event_name: str, team: str) -> tuple[in
 
 
 # ═══════════════════════════════════════════════════════════════
-#  PROFILES — profiles table only, no legacy tables
+#  PROFILES
 # ═══════════════════════════════════════════════════════════════
 
 def get_profile(user_id: str) -> dict | None:
@@ -294,7 +296,6 @@ def update_profile_details(user_id: str, name: str,
 
 
 def update_user_status(user_id: str, status: str) -> tuple[bool, str]:
-    """Admin only. Validated before DB call."""
     if status not in ("pending", "approved", "rejected"):
         return False, "Invalid status."
     sb = get_client()
@@ -306,7 +307,6 @@ def update_user_status(user_id: str, status: str) -> tuple[bool, str]:
 
 
 def update_user_role(user_id: str, role: str) -> tuple[bool, str]:
-    """Admin only. Validated before DB call."""
     if role not in ("admin", "editor", "viewer"):
         return False, "Invalid role."
     sb = get_client()
@@ -346,6 +346,12 @@ def get_pending_users() -> list[dict]:
         return []
 
 
+def get_user_timezone(user_id: str) -> str:
+    """Return the IANA timezone string for a user, defaulting to UTC."""
+    profile = get_profile(user_id)
+    return (profile or {}).get("timezone", "UTC") or "UTC"
+
+
 # ═══════════════════════════════════════════════════════════════
 #  LEAGUES
 # ═══════════════════════════════════════════════════════════════
@@ -363,7 +369,10 @@ def load_leagues() -> pd.DataFrame:
 def add_league(league_name: str, country: str = "") -> tuple[bool, str]:
     sb = get_client()
     try:
-        sb.table("leagues").insert({"league_name": league_name.strip(), "country": country.strip()}).execute()
+        sb.table("leagues").insert({
+            "league_name": league_name.strip(),
+            "country":     country.strip(),
+        }).execute()
         load_leagues.clear()
         return True, f"League **{league_name}** added."
     except APIError as e:
@@ -404,11 +413,21 @@ def add_player(player_name: str, country: str = "", role: str = "") -> tuple[boo
 
 # ═══════════════════════════════════════════════════════════════
 #  MATCHES
+#  match_datetime (TIMESTAMPTZ) is the source of truth.
+#  match_date     (DATE)        is kept for filtering/grouping.
+#  ALL callers must provide match_time + tz_name so this module
+#  can derive match_datetime via datetime_utils.to_utc().
 # ═══════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_matches(event_id: int | None = None) -> pd.DataFrame:
-    """Load matches. event_id optional — None returns all (incl. standalones)."""
+    """
+    Load matches. event_id optional — None returns all (incl. standalones).
+    Guarantees match_datetime is always a UTC-aware Timestamp (never NaT):
+    existing records without match_datetime fall back to match_date at 00:00 UTC.
+    """
+    from utils.datetime_utils import normalize_datetime
+
     try:
         sb = get_client()
         q  = sb.table("matches").select("*").order("match_date")
@@ -418,66 +437,92 @@ def load_matches(event_id: int | None = None) -> pd.DataFrame:
     except Exception:
         df = pd.DataFrame()
 
-    if not df.empty and "match_date" in df.columns:
-        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-        df = df.dropna(subset=["match_date"]).reset_index(drop=True)
+    if df.empty:
+        return df
+
+    df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+    df = df.dropna(subset=["match_date"]).reset_index(drop=True)
+
+    # Normalize match_datetime: parse UTC-aware, then backfill from match_date
+    if "match_datetime" not in df.columns:
+        df["match_datetime"] = pd.NaT
+    else:
+        df["match_datetime"] = pd.to_datetime(
+            df["match_datetime"], utc=True, errors="coerce"
+        )
+
+    df["match_datetime"] = df.apply(
+        lambda r: normalize_datetime(r["match_date"], r["match_datetime"]),
+        axis=1,
+    )
+
     return df
 
 
 def add_match(
-    event_id: int | None, match_name: str, match_date: date,
-    team1_id: int | None = None, team2_id: int | None = None,
-    venue: str = "", notes: str = "",
-    match_datetime=None,
+    event_id: int | None,
+    match_name: str,
+    match_date: date,
+    team1_id: int | None = None,
+    team2_id: int | None = None,
+    venue: str = "",
+    notes: str = "",
+    # ── datetime fields (new) ──────────────────────────────
+    match_time: str = "00:00",
+    tz_name: str = "UTC",
 ) -> tuple[bool, str]:
-    """event_id is optional — pass None for standalone friendly matches.
-    match_datetime: UTC datetime (TIMESTAMPTZ) for Issue 15 timezone support."""
+    """
+    Add a match with full datetime precision.
+
+    match_date  (DATE)       — kept for grouping/filtering.
+    match_time  (str HH:MM)  — combined with match_date + tz_name.
+    tz_name     (IANA str)   — user's local timezone at input time.
+    match_datetime is derived via datetime_utils.to_utc() and stored as UTC.
+    """
+    from utils.datetime_utils import to_utc
+
     sb = get_client()
 
-    # Validate event_id if provided
     if event_id is not None:
         try:
-            ev_check = sb.table("events").select("id").eq("id", event_id).maybe_single().execute()
+            ev_check = (
+                sb.table("events").select("id")
+                .eq("id", event_id).maybe_single().execute()
+            )
             if not ev_check.data:
                 return False, "Referenced event not found."
         except Exception as e:
             return False, f"Event validation failed: {e}"
 
-    # Duplicate check: same date + both teams
-    if team1_id and team2_id and match_date:
+    # Duplicate guard: same date + both teams
+    if team1_id and team2_id:
         try:
             dup = (
-                sb.table("matches")
-                .select("id")
+                sb.table("matches").select("id")
                 .eq("match_date", str(match_date))
-                .eq("team1_id",   team1_id)
-                .eq("team2_id",   team2_id)
-                .maybe_single()
-                .execute()
+                .eq("team1_id", team1_id)
+                .eq("team2_id", team2_id)
+                .maybe_single().execute()
             )
             if dup.data:
                 return False, "A match with these teams on this date already exists."
         except Exception:
             pass
 
+    match_datetime_utc = to_utc(match_date, match_time or "00:00", tz_name or "UTC")
+
     try:
         payload: dict = {
-            "match_name": match_name.strip(),
-            "match_date": str(match_date),
-            "team1_id":   team1_id,
-            "team2_id":   team2_id,
-            "venue":      venue.strip(),
-            "notes":      notes.strip(),
+            "match_name":     match_name.strip(),
+            "match_date":     str(match_date),
+            "match_datetime": match_datetime_utc.isoformat(),
+            "team1_id":       team1_id,
+            "team2_id":       team2_id,
+            "venue":          venue.strip(),
+            "notes":          notes.strip(),
         }
         if event_id is not None:
             payload["event_id"] = event_id
-        # Issue 15: store UTC datetime if provided
-        if match_datetime is not None:
-            import pytz
-            dt = match_datetime
-            if hasattr(dt, "tzinfo") and dt.tzinfo is None:
-                dt = dt.replace(tzinfo=pytz.UTC)
-            payload["match_datetime"] = dt.isoformat()
         sb.table("matches").insert(payload).execute()
         load_matches.clear()
         return True, f"Match **{match_name}** added."
@@ -486,17 +531,41 @@ def add_match(
 
 
 def bulk_add_matches(rows: list[dict]) -> tuple[int, list[str]]:
-    """rows: list of dicts with keys: event_id, match_name, match_date, team1_id, team2_id, venue"""
+    """
+    Bulk insert matches from CSV or other sources.
+
+    Each dict may contain:
+        Required : event_id, match_name, match_date (date object)
+        Optional : match_time (str HH:MM, default "00:00")
+                   timezone   (IANA str, default "UTC")
+                   team1_id, team2_id, venue
+
+    match_datetime is derived from match_date + match_time + timezone
+    via datetime_utils.to_utc(). No time is ever silently discarded.
+    """
     success, warns = 0, []
-    for r in rows:
+    for i, r in enumerate(rows):
+        match_date = r.get("match_date")
+        if match_date is None:
+            warns.append(f"Row {i+1}: missing match_date — skipped.")
+            continue
+
         ok, msg = add_match(
-            r["event_id"], r.get("match_name",""), r["match_date"],
-            r.get("team1_id"), r.get("team2_id"), r.get("venue",""),
+            event_id   = r.get("event_id"),
+            match_name = r.get("match_name", ""),
+            match_date = match_date,
+            team1_id   = r.get("team1_id"),
+            team2_id   = r.get("team2_id"),
+            venue      = r.get("venue", ""),
+            notes      = r.get("notes", ""),
+            match_time = r.get("match_time", "00:00") or "00:00",
+            tz_name    = r.get("timezone", "UTC") or "UTC",
         )
         if ok:
             success += 1
         else:
-            warns.append(msg)
+            warns.append(f"Row {i+1}: {msg}")
+
     return success, warns
 
 
@@ -522,7 +591,6 @@ def load_registrations() -> pd.DataFrame:
 
 def add_registration(event_id: int | None, start_date: date, deadline: date,
                      notes: str = "", user_id: str | None = None) -> tuple[bool, str]:
-    """event_id optional — supports pre-announcement registration windows."""
     if start_date > deadline:
         return False, "Deadline must be on or after start date."
     sb = get_client()
@@ -545,10 +613,30 @@ def add_registration(event_id: int | None, start_date: date, deadline: date,
 
 # ═══════════════════════════════════════════════════════════════
 #  AUCTIONS
+#  auction_datetime (TIMESTAMPTZ) is the source of truth.
+#  auction_date     (DATE)        is kept for filtering/grouping.
+#  franchise_name column is NOT removed (backward compat with DB)
+#  but is no longer written or read by this codebase.
+#  New column needed: auction_name (TEXT), auction_datetime (TIMESTAMPTZ).
+#
+#  SQL migration (run once in Supabase SQL Editor):
+#  ─────────────────────────────────────────────────
+#  ALTER TABLE public.auctions
+#      ADD COLUMN IF NOT EXISTS auction_name     TEXT        DEFAULT '',
+#      ADD COLUMN IF NOT EXISTS auction_datetime TIMESTAMPTZ,
+#      ADD COLUMN IF NOT EXISTS location         TEXT        DEFAULT '',
+#      ADD COLUMN IF NOT EXISTS notes            TEXT        DEFAULT '';
+#  -- franchise_name is intentionally left in place (existing rows).
 # ═══════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_auctions() -> pd.DataFrame:
+    """
+    Load auctions with a guaranteed UTC-aware auction_datetime column.
+    Existing rows with NULL auction_datetime fall back to auction_date at 00:00 UTC.
+    """
+    from utils.datetime_utils import normalize_datetime
+
     try:
         sb   = get_client()
         resp = sb.table("auctions").select("*, events(event_name)").order("auction_date").execute()
@@ -556,28 +644,80 @@ def load_auctions() -> pd.DataFrame:
     except Exception:
         df = pd.DataFrame()
 
-    if not df.empty and "auction_date" in df.columns:
-        df["auction_date"] = pd.to_datetime(df["auction_date"], errors="coerce")
-        df = df.dropna(subset=["auction_date"])
+    if df.empty:
+        return df
+
+    df["auction_date"] = pd.to_datetime(df["auction_date"], errors="coerce")
+    df = df.dropna(subset=["auction_date"]).reset_index(drop=True)
+
+    if "auction_datetime" not in df.columns:
+        df["auction_datetime"] = pd.NaT
+    else:
+        df["auction_datetime"] = pd.to_datetime(
+            df["auction_datetime"], utc=True, errors="coerce"
+        )
+
+    df["auction_datetime"] = df.apply(
+        lambda r: normalize_datetime(r["auction_date"], r["auction_datetime"]),
+        axis=1,
+    )
+
+    # Derive display name: prefer auction_name, fall back to franchise_name for old rows
+    if "auction_name" not in df.columns:
+        df["auction_name"] = ""
+    if "franchise_name" in df.columns:
+        df["auction_name"] = df["auction_name"].where(
+            df["auction_name"].str.strip() != "", df.get("franchise_name", "")
+        )
+
     return df
 
 
-def add_auction(event_id: int | None, franchise_name: str, auction_date: date,
-                location: str = "", notes: str = "") -> tuple[bool, str]:
-    """event_id optional — supports auctions not yet linked to a specific event."""
+def add_auction(
+    event_id: int | None,
+    auction_name: str,
+    auction_date: date,
+    location: str = "",
+    notes: str = "",
+    # ── datetime fields ────────────────────────────────────
+    auction_time: str = "00:00",
+    tz_name: str = "UTC",
+) -> tuple[bool, str]:
+    """
+    Add an auction with full datetime precision.
+
+    auction_date    (DATE)      — kept for grouping/filtering.
+    auction_time    (str HH:MM) — combined with auction_date + tz_name.
+    tz_name         (IANA str)  — user's local timezone at input time.
+    auction_datetime is derived via datetime_utils.to_utc() → stored as UTC.
+
+    franchise_name is NOT written; the column is kept for DB backward compat.
+    """
+    from utils.datetime_utils import to_utc
+
+    if not auction_name.strip():
+        return False, "Auction name is required."
+
+    auction_datetime_utc = to_utc(
+        auction_date,
+        auction_time or "00:00",
+        tz_name or "UTC",
+    )
+
     sb = get_client()
     try:
         payload: dict = {
-            "franchise_name": franchise_name.strip(),
-            "auction_date":   str(auction_date),
-            "location":       location.strip(),
-            "notes":          notes.strip(),
+            "auction_name":     auction_name.strip(),
+            "auction_date":     str(auction_date),
+            "auction_datetime": auction_datetime_utc.isoformat(),
+            "location":         location.strip(),
+            "notes":            notes.strip(),
         }
         if event_id is not None:
             payload["event_id"] = event_id
         sb.table("auctions").insert(payload).execute()
         load_auctions.clear()
-        return True, f"Auction for **{franchise_name}** added."
+        return True, f"Auction **{auction_name}** added."
     except APIError as e:
         return False, str(e)
 
@@ -590,164 +730,128 @@ def add_auction(event_id: int | None, franchise_name: str, auction_date: date,
 def load_clients() -> pd.DataFrame:
     try:
         sb   = get_client()
-        resp = sb.table("clients").select("*").order("client_name").execute()
+        resp = sb.table("clients").select("*").order("full_name").execute()
         return pd.DataFrame(resp.data or [])
     except Exception:
         return pd.DataFrame()
 
 
-def add_client(client_name: str, email: str = "", phone: str = "",
-               country: str = "", citizenship: str = "") -> tuple[bool, str]:
+def add_client_full(
+    full_name: str, first_name: str, last_name: str,
+    dob, citizenship: str, client_type: str,
+    player_role: str = "", batting_style: str = "",
+    bowling_style: str = "", shirt_number: str = "",
+    espn_link: str = "",
+    email: str = "", phone: str = "",
+    passport_number: str = "", passport_expiry=None,
+    visa_details: str = "", departure_airport: str = "",
+) -> tuple[bool, str]:
     sb = get_client()
+
     try:
-        sb.table("clients").insert({
-            "client_name": client_name.strip(),
-            "email":       email.strip(),
-            "phone":       phone.strip(),
-            "country":     country.strip(),
-            "citizenship": citizenship.strip(),
-        }).execute()
-        load_clients.clear()
-        return True, f"Client **{client_name}** added."
-    except APIError as e:
-        return False, str(e)
-
-
-def tag_client_player(client_id: int, player_id: int) -> tuple[bool, str]:
-    sb = get_client()
-    try:
-        sb.table("client_player_map").insert({"client_id": client_id, "player_id": player_id}).execute()
-        return True, "Tagged."
-    except APIError as e:
-        if "unique" in str(e).lower() or "23505" in str(e):
-            return False, "Already tagged."
-        return False, str(e)
-
-
-def tag_client_event(client_id: int, event_id: int) -> tuple[bool, str]:
-    sb = get_client()
-    try:
-        sb.table("client_event_map").insert({"client_id": client_id, "event_id": event_id}).execute()
-        return True, "Tagged."
-    except APIError as e:
-        if "unique" in str(e).lower() or "23505" in str(e):
-            return False, "Already tagged."
-        return False, str(e)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  TRAVEL PLANS
-# ═══════════════════════════════════════════════════════════════
-
-def load_travel_plans(player_id: int | None = None) -> pd.DataFrame:
-    try:
-        sb = get_client()
-        q  = sb.table("travel_plans").select(
-            "*, players(player_name), events(event_name)"
-        ).order("departure_date")
-        if player_id:
-            q = q.eq("player_id", player_id)
-        df = pd.DataFrame(q.execute().data or [])
+        dup = (
+            sb.table("clients").select("id")
+            .eq("full_name", full_name.strip())
+            .maybe_single().execute()
+        )
+        if dup.data and dob:
+            dup2 = (
+                sb.table("clients").select("id")
+                .eq("full_name", full_name.strip())
+                .eq("dob", str(dob))
+                .maybe_single().execute()
+            )
+            if dup2.data:
+                return False, f"Client **{full_name}** with this date of birth already exists."
     except Exception:
-        df = pd.DataFrame()
+        pass
 
-    if not df.empty:
-        for c in ["departure_date", "arrival_date"]:
-            if c in df.columns:
-                df[c] = pd.to_datetime(df[c], errors="coerce")
-    return df
+    try:
+        resp = sb.table("clients").insert({
+            "full_name":     full_name.strip(),
+            "first_name":    first_name.strip(),
+            "last_name":     last_name.strip(),
+            "dob":           str(dob) if dob else None,
+            "citizenship":   citizenship.strip(),
+            "client_type":   client_type,
+            "player_role":   player_role.strip(),
+            "batting_style": batting_style.strip(),
+            "bowling_style": bowling_style.strip(),
+            "shirt_number":  shirt_number.strip(),
+            "espn_link":     espn_link.strip(),
+        }).execute()
+        client_id = resp.data[0]["id"] if resp.data else None
+    except APIError as e:
+        if "23505" in str(e) or "unique" in str(e).lower():
+            return False, f"Client **{full_name}** already exists."
+        return False, f"DB error: {e}"
+    except Exception as e:
+        return False, f"Error saving client: {e}"
+
+    if client_id is None:
+        return False, "Client saved but ID not returned."
+
+    has_sensitive = any([email, phone, passport_number, passport_expiry,
+                         visa_details, departure_airport])
+    if has_sensitive:
+        try:
+            sb.table("client_sensitive").insert({
+                "client_id":         client_id,
+                "email":             email.strip(),
+                "phone":             phone.strip(),
+                "passport_number":   passport_number.strip(),
+                "passport_expiry":   str(passport_expiry) if passport_expiry else None,
+                "visa_details":      visa_details.strip(),
+                "departure_airport": departure_airport.strip(),
+            }).execute()
+        except Exception as e:
+            load_clients.clear()
+            return True, f"Client saved (ID {client_id}), but sensitive data failed: {e}"
+
+    load_clients.clear()
+    return True, f"Client **{full_name}** added successfully."
 
 
-def add_travel_plan(player_id: int, event_id: int | None, departure_date: date | None,
-                    arrival_date: date | None, from_country: str = "",
-                    to_country: str = "", notes: str = "") -> tuple[bool, str]:
+def load_client_sensitive(client_id: int) -> dict | None:
+    from db.auth import is_admin as _is_admin
+    if not _is_admin():
+        return None
     sb = get_client()
     try:
-        sb.table("travel_plans").insert({
-            "player_id":      player_id,
-            "event_id":       event_id,
-            "departure_date": str(departure_date) if departure_date else None,
-            "arrival_date":   str(arrival_date)   if arrival_date   else None,
-            "from_country":   from_country.strip(),
-            "to_country":     to_country.strip(),
-            "notes":          notes.strip(),
-        }).execute()
-        return True, "Travel plan added."
-    except APIError as e:
-        return False, str(e)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  VISA STATUS
-# ═══════════════════════════════════════════════════════════════
-
-def load_visa_status(player_id: int | None = None) -> pd.DataFrame:
-    try:
-        sb = get_client()
-        q  = sb.table("visa_status").select("*, players(player_name)").order("created_at", desc=True)
-        if player_id:
-            q = q.eq("player_id", player_id)
-        df = pd.DataFrame(q.execute().data or [])
+        resp = (
+            sb.table("client_sensitive").select("*")
+            .eq("client_id", client_id).maybe_single().execute()
+        )
+        return resp.data
     except Exception:
-        df = pd.DataFrame()
-
-    if not df.empty and "expiry_date" in df.columns:
-        df["expiry_date"] = pd.to_datetime(df["expiry_date"], errors="coerce")
-    return df
+        return None
 
 
-def add_visa_status(player_id: int, country: str, visa_type: str = "",
-                    status: str = "pending", expiry_date: date | None = None) -> tuple[bool, str]:
-    sb = get_client()
-    try:
-        sb.table("visa_status").insert({
-            "player_id":   player_id,
-            "country":     country.strip(),
-            "visa_type":   visa_type.strip(),
-            "status":      status,
-            "expiry_date": str(expiry_date) if expiry_date else None,
-        }).execute()
-        return True, "Visa status added."
-    except APIError as e:
-        return False, str(e)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  PLAYER UNAVAILABILITY
-# ═══════════════════════════════════════════════════════════════
-
-def load_unavailability(player_id: int | None = None) -> pd.DataFrame:
-    try:
-        sb = get_client()
-        q  = sb.table("player_unavailability").select(
-            "*, players(player_name)"
-        ).order("start_date")
-        if player_id:
-            q = q.eq("player_id", player_id)
-        df = pd.DataFrame(q.execute().data or [])
-    except Exception:
-        df = pd.DataFrame()
-
-    if not df.empty:
-        for c in ["start_date", "end_date"]:
-            if c in df.columns:
-                df[c] = pd.to_datetime(df[c], errors="coerce")
-    return df
-
-
-def add_unavailability(player_id: int, start_date: date,
-                       end_date: date, reason: str = "") -> tuple[bool, str]:
-    sb = get_client()
-    try:
-        sb.table("player_unavailability").insert({
-            "player_id":  player_id,
-            "start_date": str(start_date),
-            "end_date":   str(end_date),
-            "reason":     reason.strip(),
-        }).execute()
-        return True, "Unavailability period added."
-    except APIError as e:
-        return False, str(e)
+def bulk_add_clients(rows: list[dict]) -> tuple[int, list[str]]:
+    success, warns = 0, []
+    for r in rows:
+        full = r.get("full_name", "").strip()
+        if not full:
+            warns.append("Row skipped: full_name is empty.")
+            continue
+        ok, msg = add_client_full(
+            full_name     = full,
+            first_name    = r.get("first_name", ""),
+            last_name     = r.get("last_name", ""),
+            dob           = r.get("dob"),
+            citizenship   = r.get("citizenship", ""),
+            client_type   = r.get("client_type", "Player"),
+            player_role   = r.get("player_role", ""),
+            batting_style = r.get("batting_style", ""),
+            bowling_style = r.get("bowling_style", ""),
+            shirt_number  = r.get("shirt_number", ""),
+            espn_link     = r.get("espn_link", ""),
+        )
+        if ok:
+            success += 1
+        else:
+            warns.append(f"{full}: {msg}")
+    return success, warns
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -760,12 +864,10 @@ def get_pending_notifications() -> list[dict]:
     try:
         now  = datetime.now(tz.utc).isoformat()
         resp = (
-            sb.table("notifications")
-            .select("*")
+            sb.table("notifications").select("*")
             .eq("status", "pending")
             .lte("scheduled_at", now)
-            .order("scheduled_at")
-            .execute()
+            .order("scheduled_at").execute()
         )
         return resp.data or []
     except Exception:
@@ -818,11 +920,8 @@ def get_all_notifications(limit: int = 200) -> list[dict]:
     sb = get_client()
     try:
         resp = (
-            sb.table("notifications")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
+            sb.table("notifications").select("*")
+            .order("created_at", desc=True).limit(limit).execute()
         )
         return resp.data or []
     except Exception:
@@ -836,7 +935,6 @@ def get_all_notifications(limit: int = 200) -> list[dict]:
 def log_activity(user_id: str | None, user_email: str, action: str,
                  entity_type: str = "", entity_id: int | None = None,
                  details: dict | None = None) -> None:
-    """Fire-and-forget activity log insert."""
     sb = get_client()
     try:
         sb.table("activity_logs").insert({
@@ -855,11 +953,8 @@ def get_activity_logs(limit: int = 300) -> list[dict]:
     sb = get_client()
     try:
         resp = (
-            sb.table("activity_logs")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
+            sb.table("activity_logs").select("*")
+            .order("created_at", desc=True).limit(limit).execute()
         )
         return resp.data or []
     except Exception:
@@ -868,24 +963,28 @@ def get_activity_logs(limit: int = 300) -> list[dict]:
 
 # ═══════════════════════════════════════════════════════════════
 #  MULTI-ENTITY CALENDAR AGGREGATOR
+#  match_datetime and auction_datetime are used for time display.
+#  start_date / end_date remain the grid-placement key (date-only).
 # ═══════════════════════════════════════════════════════════════
 
 def load_calendar_items(
     gender: str | None = None,
     category: str | None = None,
     event_id: int | None = None,
-    player_id: int | None = None,
 ) -> pd.DataFrame:
     """
-    Aggregate events, matches, registrations, auctions into one
-    normalised DataFrame with columns:
+    Aggregate events, matches, registrations, auctions into one normalised
+    DataFrame with columns:
         id, type, title, start_date, end_date, metadata (dict)
+
+    metadata for matches  includes: match_datetime_utc (ISO str), event, venue
+    metadata for auctions includes: auction_datetime_utc (ISO str), event, location
     """
     rows: list[dict] = []
 
     # ── Events ────────────────────────────────────────────────
     ev = load_events(gender=gender, category=category)
-    if event_id and not ev.empty:
+    if event_id and not ev.empty and "id" in ev.columns:
         ev = ev[ev["id"] == event_id]
     for _, r in ev.iterrows():
         rows.append({
@@ -895,24 +994,22 @@ def load_calendar_items(
             "start_date": r["start_date"],
             "end_date":   r["end_date"],
             "metadata": {
-                "format":   r.get("format",""),
-                "category": r.get("category",""),
-                "gender":   r.get("gender",""),
-                "country":  r.get("country",""),
+                "format":   r.get("format", ""),
+                "category": r.get("category", ""),
+                "gender":   r.get("gender", ""),
+                "country":  r.get("country", ""),
             },
         })
 
-    # ── Matches ───────────────────────────────────────────────
+    # ── Matches — use match_datetime as the time-of-day truth ─
     ma = load_matches(event_id=event_id)
     for _, r in ma.iterrows():
         ev_name = ""
         if isinstance(r.get("events"), dict):
-            ev_name = r["events"].get("event_name","")
-        t1 = r.get("team1",{}) or {}
-        t2 = r.get("team2",{}) or {}
-        t1n = t1.get("team_name","") if isinstance(t1, dict) else ""
-        t2n = t2.get("team_name","") if isinstance(t2, dict) else ""
-        title = r.get("match_name","") or f"{t1n} vs {t2n}" or "Match"
+            ev_name = r["events"].get("event_name", "")
+        title = r.get("match_name", "") or "Match"
+        # match_datetime is guaranteed UTC-aware by load_matches()
+        mdt = r.get("match_datetime")
         rows.append({
             "id":         int(r["id"]) if pd.notna(r.get("id")) else 0,
             "type":       "match",
@@ -920,10 +1017,9 @@ def load_calendar_items(
             "start_date": r["match_date"],
             "end_date":   r["match_date"],
             "metadata": {
-                "event":  ev_name,
-                "team1":  t1n,
-                "team2":  t2n,
-                "venue":  r.get("venue",""),
+                "event":              ev_name,
+                "venue":              r.get("venue", ""),
+                "match_datetime_utc": mdt.isoformat() if mdt is not None else None,
             },
         })
 
@@ -934,35 +1030,44 @@ def load_calendar_items(
     for _, r in reg.iterrows():
         ev_name = ""
         if isinstance(r.get("events"), dict):
-            ev_name = r["events"].get("event_name","")
+            ev_name = r["events"].get("event_name", "")
         rows.append({
             "id":         int(r["id"]) if pd.notna(r.get("id")) else 0,
             "type":       "registration",
-            "title":      f"Registration: {ev_name}",
+            "title":      f"Registration: {ev_name}" if ev_name else "Registration Window",
             "start_date": r["start_date"],
             "end_date":   r["deadline"],
-            "metadata":   {"event": ev_name, "deadline": str(r["deadline"].date() if pd.notna(r["deadline"]) else "")},
+            "metadata": {
+                "event":    ev_name,
+                "deadline": str(r["deadline"].date()) if pd.notna(r.get("deadline")) else "",
+            },
         })
 
-    # ── Auctions ──────────────────────────────────────────────
+    # ── Auctions — use auction_datetime as time-of-day truth ──
     au = load_auctions()
     if event_id and not au.empty and "event_id" in au.columns:
         au = au[au["event_id"] == event_id]
     for _, r in au.iterrows():
         ev_name = ""
         if isinstance(r.get("events"), dict):
-            ev_name = r["events"].get("event_name","")
+            ev_name = r["events"].get("event_name", "")
+        adt = r.get("auction_datetime")
+        title = r.get("auction_name", "") or "Auction"
         rows.append({
             "id":         int(r["id"]) if pd.notna(r.get("id")) else 0,
             "type":       "auction",
-            "title":      f"Auction — {r.get('franchise_name','')}",
+            "title":      title,
             "start_date": r["auction_date"],
             "end_date":   r["auction_date"],
-            "metadata":   {"event": ev_name, "location": r.get("location","")},
+            "metadata": {
+                "event":               ev_name,
+                "location":            r.get("location", ""),
+                "auction_datetime_utc": adt.isoformat() if adt is not None else None,
+            },
         })
 
     if not rows:
-        return pd.DataFrame(columns=["id","type","title","start_date","end_date","metadata"])
+        return pd.DataFrame(columns=["id", "type", "title", "start_date", "end_date", "metadata"])
 
     df = pd.DataFrame(rows)
     df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
@@ -976,9 +1081,7 @@ def load_calendar_items(
 # ═══════════════════════════════════════════════════════════════
 
 def schedule_notifications_for_event(event_row: dict, recipients: list[str]) -> None:
-    """Create pending notifications for an event (same-day morning)."""
     from datetime import datetime, time, timezone as tz
-    import pytz
     start = event_row.get("start_date")
     if not start:
         return
@@ -987,31 +1090,42 @@ def schedule_notifications_for_event(event_row: dict, recipients: list[str]) -> 
     send_at = datetime.combine(start.date(), time(7, 0), tzinfo=tz.utc)
     for email in recipients:
         create_notification(
-            user_email  = email,
-            notif_type  = "event_start",
-            entity_id   = event_row["id"],
-            entity_type = "event",
-            message     = f"Event starting today: {event_row.get('event_name','')}",
-            scheduled_at= send_at,
+            user_email   = email,
+            notif_type   = "event_start",
+            entity_id    = event_row["id"],
+            entity_type  = "event",
+            message      = f"Event starting today: {event_row.get('event_name', '')}",
+            scheduled_at = send_at,
         )
 
 
 def schedule_notifications_for_match(match_row: dict, recipients: list[str]) -> None:
+    """
+    Schedule notification based on match_datetime (UTC) if present,
+    otherwise fall back to match_date at 07:00 UTC.
+    """
+    from utils.datetime_utils import normalize_datetime
     from datetime import datetime, time, timezone as tz
+
     match_date = match_row.get("match_date")
-    if not match_date:
-        return
-    if isinstance(match_date, str):
-        match_date = pd.to_datetime(match_date)
-    send_at = datetime.combine(match_date.date(), time(7, 0), tzinfo=tz.utc)
+    mdt = match_row.get("match_datetime")
+    match_datetime_utc = normalize_datetime(match_date, mdt)
+
+    # Send 2 hours before match, defaulting to 07:00 UTC if time is midnight (fallback)
+    if match_datetime_utc.hour == 0 and match_datetime_utc.minute == 0:
+        send_at = match_datetime_utc.replace(hour=7)
+    else:
+        from datetime import timedelta
+        send_at = match_datetime_utc - timedelta(hours=2)
+
     for email in recipients:
         create_notification(
-            user_email  = email,
-            notif_type  = "match_start",
-            entity_id   = match_row["id"],
-            entity_type = "match",
-            message     = f"Match today: {match_row.get('match_name', 'Match')}",
-            scheduled_at= send_at,
+            user_email   = email,
+            notif_type   = "match_start",
+            entity_id    = match_row["id"],
+            entity_type  = "match",
+            message      = f"Match today: {match_row.get('match_name', 'Match')}",
+            scheduled_at = send_at,
         )
 
 
@@ -1049,170 +1163,98 @@ def delete_squad_entry(squad_id: int) -> tuple[bool, str]:
         return False, str(e)
 
 
-def get_user_timezone(user_id: str) -> str:
-    """Return the IANA timezone string for a user, defaulting to UTC."""
-    profile = get_profile(user_id)
-    return (profile or {}).get("timezone", "UTC") or "UTC"
+# ── Travel / Visa / Unavailability — unchanged pass-through ──
 
-
-# ═══════════════════════════════════════════════════════════════
-#  CLIENTS (public data)
-# ═══════════════════════════════════════════════════════════════
-
-@st.cache_data(ttl=120, show_spinner=False)
-def load_clients() -> pd.DataFrame:
+def load_travel_plans(player_id: int | None = None) -> pd.DataFrame:
     try:
-        sb   = get_client()
-        resp = sb.table("clients").select("*").order("full_name").execute()
-        return pd.DataFrame(resp.data or [])
+        sb = get_client()
+        q  = sb.table("travel_plans").select(
+            "*, players(player_name), events(event_name)"
+        ).order("departure_date")
+        if player_id:
+            q = q.eq("player_id", player_id)
+        df = pd.DataFrame(q.execute().data or [])
     except Exception:
-        return pd.DataFrame()
+        df = pd.DataFrame()
+    if not df.empty:
+        for c in ["departure_date", "arrival_date"]:
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
 
 
-def add_client_full(
-    full_name: str, first_name: str, last_name: str,
-    dob, citizenship: str, client_type: str,
-    player_role: str = "", batting_style: str = "",
-    bowling_style: str = "", shirt_number: str = "",
-    espn_link: str = "",
-    # Sensitive fields
-    email: str = "", phone: str = "",
-    passport_number: str = "", passport_expiry=None,
-    visa_details: str = "", departure_airport: str = "",
-) -> tuple[bool, str]:
-    """
-    Insert client (public) + sensitive record in one transaction.
-    Returns (success, message).
-    Editors can INSERT but the RLS policy prevents them reading
-    sensitive data back after saving.
-    """
+def add_travel_plan(player_id: int, event_id: int | None, departure_date,
+                    arrival_date, from_country: str = "",
+                    to_country: str = "", notes: str = "") -> tuple[bool, str]:
     sb = get_client()
-
-    # Duplicate check: full_name + dob
     try:
-        dup = (
-            sb.table("clients")
-            .select("id")
-            .eq("full_name", full_name.strip())
-            .maybe_single()
-            .execute()
-        )
-        if dup.data:
-            if dob:
-                dup2 = (
-                    sb.table("clients")
-                    .select("id")
-                    .eq("full_name", full_name.strip())
-                    .eq("dob", str(dob))
-                    .maybe_single()
-                    .execute()
-                )
-                if dup2.data:
-                    return False, f"Client **{full_name}** with this date of birth already exists."
-    except Exception:
-        pass
-
-    try:
-        resp = sb.table("clients").insert({
-            "full_name":     full_name.strip(),
-            "first_name":    first_name.strip(),
-            "last_name":     last_name.strip(),
-            "dob":           str(dob) if dob else None,
-            "citizenship":   citizenship.strip(),
-            "client_type":   client_type,
-            "player_role":   player_role.strip(),
-            "batting_style": batting_style.strip(),
-            "bowling_style": bowling_style.strip(),
-            "shirt_number":  shirt_number.strip(),
-            "espn_link":     espn_link.strip(),
+        sb.table("travel_plans").insert({
+            "player_id":      player_id, "event_id": event_id,
+            "departure_date": str(departure_date) if departure_date else None,
+            "arrival_date":   str(arrival_date)   if arrival_date   else None,
+            "from_country":   from_country.strip(),
+            "to_country":     to_country.strip(),
+            "notes":          notes.strip(),
         }).execute()
-        client_id = resp.data[0]["id"] if resp.data else None
+        return True, "Travel plan added."
     except APIError as e:
-        if "23505" in str(e) or "unique" in str(e).lower():
-            return False, f"Client **{full_name}** already exists."
-        return False, f"DB error: {e}"
-    except Exception as e:
-        return False, f"Error saving client: {e}"
-
-    if client_id is None:
-        return False, "Client saved but ID not returned."
-
-    # Insert sensitive record (may fail for non-admin but insert is allowed)
-    has_sensitive = any([
-        email, phone, passport_number, passport_expiry,
-        visa_details, departure_airport,
-    ])
-    if has_sensitive:
-        try:
-            sb.table("client_sensitive").insert({
-                "client_id":          client_id,
-                "email":              email.strip(),
-                "phone":              phone.strip(),
-                "passport_number":    passport_number.strip(),
-                "passport_expiry":    str(passport_expiry) if passport_expiry else None,
-                "visa_details":       visa_details.strip(),
-                "departure_airport":  departure_airport.strip(),
-            }).execute()
-        except Exception as e:
-            # Client public record was saved — note the partial failure
-            load_clients.clear()
-            return True, f"Client saved (ID {client_id}), but sensitive data failed: {e}"
-
-    load_clients.clear()
-    return True, f"Client **{full_name}** added successfully."
+        return False, str(e)
 
 
-def load_client_sensitive(client_id: int) -> dict | None:
-    """
-    Admin-only. Role is checked in Python BEFORE the DB query is issued.
-    RLS provides a second layer of enforcement.
-    Returns None if caller is not admin or record not found.
-    """
-    # Python-level gate — never issue the query for non-admins
-    from db.auth import is_admin as _is_admin
-    if not _is_admin():
-        return None
+def load_visa_status(player_id: int | None = None) -> pd.DataFrame:
+    try:
+        sb = get_client()
+        q  = sb.table("visa_status").select("*, players(player_name)").order("created_at", desc=True)
+        if player_id:
+            q = q.eq("player_id", player_id)
+        df = pd.DataFrame(q.execute().data or [])
+    except Exception:
+        df = pd.DataFrame()
+    if not df.empty and "expiry_date" in df.columns:
+        df["expiry_date"] = pd.to_datetime(df["expiry_date"], errors="coerce")
+    return df
 
+
+def add_visa_status(player_id: int, country: str, visa_type: str = "",
+                    status: str = "pending", expiry_date=None) -> tuple[bool, str]:
     sb = get_client()
     try:
-        resp = (
-            sb.table("client_sensitive")
-            .select("*")
-            .eq("client_id", client_id)
-            .maybe_single()
-            .execute()
-        )
-        return resp.data
+        sb.table("visa_status").insert({
+            "player_id":   player_id, "country": country.strip(),
+            "visa_type":   visa_type.strip(), "status": status,
+            "expiry_date": str(expiry_date) if expiry_date else None,
+        }).execute()
+        return True, "Visa status added."
+    except APIError as e:
+        return False, str(e)
+
+
+def load_unavailability(player_id: int | None = None) -> pd.DataFrame:
+    try:
+        sb = get_client()
+        q  = sb.table("player_unavailability").select(
+            "*, players(player_name)"
+        ).order("start_date")
+        if player_id:
+            q = q.eq("player_id", player_id)
+        df = pd.DataFrame(q.execute().data or [])
     except Exception:
-        return None
+        df = pd.DataFrame()
+    if not df.empty:
+        for c in ["start_date", "end_date"]:
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
 
 
-def bulk_add_clients(rows: list[dict]) -> tuple[int, list[str]]:
-    """
-    rows: list of dicts with public client fields.
-    Sensitive fields not supported in bulk upload.
-    """
-    success, warns = 0, []
-    for r in rows:
-        full = r.get("full_name","").strip()
-        if not full:
-            warns.append("Row skipped: full_name is empty.")
-            continue
-        ok, msg = add_client_full(
-            full_name    = full,
-            first_name   = r.get("first_name",""),
-            last_name    = r.get("last_name",""),
-            dob          = r.get("dob"),
-            citizenship  = r.get("citizenship",""),
-            client_type  = r.get("client_type","Player"),
-            player_role  = r.get("player_role",""),
-            batting_style= r.get("batting_style",""),
-            bowling_style= r.get("bowling_style",""),
-            shirt_number = r.get("shirt_number",""),
-            espn_link    = r.get("espn_link",""),
-        )
-        if ok:
-            success += 1
-        else:
-            warns.append(f"{full}: {msg}")
-    return success, warns
+def add_unavailability(player_id: int, start_date: date,
+                       end_date: date, reason: str = "") -> tuple[bool, str]:
+    sb = get_client()
+    try:
+        sb.table("player_unavailability").insert({
+            "player_id":  player_id, "start_date": str(start_date),
+            "end_date":   str(end_date), "reason": reason.strip(),
+        }).execute()
+        return True, "Unavailability period added."
+    except APIError as e:
+        return False, str(e)
