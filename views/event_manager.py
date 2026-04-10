@@ -97,6 +97,7 @@ def _tab_tournament() -> None:
             ev_format  = st.selectbox(
                 "Format *", ["T20", "ODI", "Test", "The Hundred", "Mixed", "Other"]
             )
+            ev_timezone = st.selectbox("Event Timezone *", TIMEZONES)
 
         c3, c4 = st.columns(2)
         with c3:
@@ -122,6 +123,7 @@ def _tab_tournament() -> None:
                 ev_notes.strip(),
                 user_id   = u.id if u else None,
                 league_id = league_options[ev_league],
+                timezone  = ev_timezone,
             )
             if ok:
                 st.success(msg)

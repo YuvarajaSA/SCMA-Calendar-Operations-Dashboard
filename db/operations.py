@@ -122,13 +122,21 @@ def add_event(
     start: date, end: date, country: str, gender: str,
     notes: str = "", user_id: str | None = None,
     league_id: int | None = None,
+    timezone: str = "UTC",   # ✅ ADD THIS
 ) -> tuple[bool, str]:
     sb = get_client()
     try:
         payload = {
-            "event_name": name, "event_type": etype, "category": category,
-            "format": fmt, "start_date": str(start), "end_date": str(end),
-            "country": country, "gender": gender, "notes": notes,
+            "event_name": name,
+            "event_type": etype,
+            "category": category,
+            "format": fmt,
+            "start_date": str(start),
+            "end_date": str(end),
+            "country": country,
+            "gender": gender,
+            "notes": notes,
+            "timezone": timezone,   # ✅ ADD THIS
         }
         if user_id:
             payload["created_by"] = user_id
@@ -509,7 +517,37 @@ def add_match(
         except Exception:
             pass
 
-    match_datetime_utc = to_utc(match_date, match_time or "00:00", tz_name or "UTC")
+    # ── STEP 1: fetch event timezone ─────────────────────
+    event_tz = None
+
+    if event_id:
+        try:
+            ev = (
+                sb.table("events")
+                .select("timezone")
+                .eq("id", event_id)
+                .maybe_single()
+                .execute()
+            )
+            if ev.data and ev.data.get("timezone"):
+                event_tz = ev.data["timezone"]
+        except Exception:
+            pass
+
+    # ── STEP 2: decide final timezone ────────────────────
+    if tz_name:
+        final_tz = tz_name
+    elif event_tz:
+        final_tz = event_tz
+    else:
+        final_tz = "UTC"
+
+    # ── STEP 3: convert to UTC ───────────────────────────
+    match_datetime_utc = to_utc(
+        match_date,
+        match_time or "00:00",
+        final_tz
+    )
 
     try:
         payload: dict = {
@@ -559,7 +597,7 @@ def bulk_add_matches(rows: list[dict]) -> tuple[int, list[str]]:
             venue      = r.get("venue", ""),
             notes      = r.get("notes", ""),
             match_time = r.get("match_time", "00:00") or "00:00",
-            tz_name    = r.get("timezone", "UTC") or "UTC",
+            tz_name    = r.get("timezone")  # allow fallback logic
         )
         if ok:
             success += 1
