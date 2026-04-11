@@ -232,8 +232,6 @@ def _tab_teams() -> None:
 
 # ── Squad Tab ─────────────────────────────────────────────────
 
-# ── Squad Tab ─────────────────────────────────────────────────
-
 def _tab_squad() -> None:
     _schema_info(
         required=["event_name", "team_name", "player_name"],
@@ -274,7 +272,8 @@ def _tab_squad() -> None:
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} squad record(s).")
 # ── Render ────────────────────────────────────────────────────
-
+st.error("🚨 IF YOU CAN SEE THIS, THE FILE IS UPDATED! 🚨")
+file = st.file_uploader("Upload Matches file", type=["csv", "xlsx", "json"], key="file_matches")
 def render() -> None:
     st.markdown("""
     <div class="page-header">
