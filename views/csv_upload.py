@@ -11,7 +11,7 @@ from db.operations import (
     add_match, add_team, add_player_to_squad,
     bulk_add_matches,
 )
-from utils.datetime_utils import validate_time_str, TIMEZONES
+from utils.datetime_utils import TIMEZONES
 
 # ── Shared helpers ────────────────────────────────────────────
 
@@ -43,12 +43,12 @@ def _schema_info(required: list[str], optional: list[str]) -> None:
     </div>""", unsafe_allow_html=True)
 
 def _parse_time_flexible(val: str) -> str:
-                try:
-                    import pandas as pd
-                    t = pd.to_datetime(val).time()
-                    return f"{t.hour:02d}:{t.minute:02d}"
-                except Exception:
-                    return "00:00"
+    """Parse any time-like string into HH:MM; returns '00:00' on failure."""
+    try:
+        t = pd.to_datetime(val).time()
+        return f"{t.hour:02d}:{t.minute:02d}"
+    except Exception:
+        return "00:00"
 
 # ── Matches Tab ───────────────────────────────────────────────
 
@@ -135,11 +135,8 @@ def _tab_matches() -> None:
 
             m_date = parsed_date.date()
 
-            # Time resolution — strict validation, no silent fallback
+            # Time resolution — defaults to "00:00" when missing or unparseable
             raw_time = _parse_time_flexible(r.get("match_time", ""))
-            
-            if not raw_time:
-                raw_time = "00:00"
 
             # Timezone resolution
             raw_tz = str(r.get("timezone", "")).strip() if "timezone" in df.columns else ""
@@ -272,8 +269,6 @@ def _tab_squad() -> None:
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} squad record(s).")
 # ── Render ────────────────────────────────────────────────────
-st.error("🚨 IF YOU CAN SEE THIS, THE FILE IS UPDATED! 🚨")
-file = st.file_uploader("Upload Matches file", type=["csv", "xlsx", "json"], key="file_matches")
 def render() -> None:
     st.markdown("""
     <div class="page-header">
