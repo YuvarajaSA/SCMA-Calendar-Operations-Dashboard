@@ -13,19 +13,22 @@ from db.operations import (
 )
 from utils.datetime_utils import validate_time_str, TIMEZONES
 
-def _parse_time_flexible(val: str) -> str:
-                try:
-                    import pandas as pd
-                    t = pd.to_datetime(val).time()
-                    return f"{t.hour:02d}:{t.minute:02d}"
-                except Exception:
-                    return "00:00"
-
 # ── Shared helpers ────────────────────────────────────────────
+
+def _read_file(file) -> pd.DataFrame:
+    """Detects file extension and reads it into a pandas DataFrame."""
+    name = file.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(file)
+    elif name.endswith(".xlsx"):
+        return pd.read_excel(file)
+    elif name.endswith(".json"):
+        return pd.read_json(file)
+    else:
+        raise ValueError("Unsupported file type. Please upload a CSV, XLSX, or JSON file.")
 
 def _validate_cols(df: pd.DataFrame, required: list[str]) -> list[str]:
     return [c for c in required if c not in df.columns]
-
 
 def _schema_info(required: list[str], optional: list[str]) -> None:
     req_str = ", ".join(f"<b>{c}</b>" for c in required)
@@ -39,12 +42,24 @@ def _schema_info(required: list[str], optional: list[str]) -> None:
         </div>
     </div>""", unsafe_allow_html=True)
 
+def _parse_time_flexible(val: str) -> str:
+                try:
+                    import pandas as pd
+                    t = pd.to_datetime(val).time()
+                    return f"{t.hour:02d}:{t.minute:02d}"
+                except Exception:
+                    return "00:00"
+
+# ── Shared helpers ────────────────────────────────────────────
+
+
+# ── Matches Tab ───────────────────────────────────────────────
 
 # ── Matches Tab ───────────────────────────────────────────────
 
 def _tab_matches() -> None:
     """
-    CSV schema
+    File schema
     ──────────
     Required : event_name, match_date, team1, team2
     Optional : match_name, venue, match_time (HH:MM), timezone (IANA)
@@ -70,12 +85,12 @@ def _tab_matches() -> None:
         key="csv_match_tz",
     )
 
-    file = st.file_uploader("Upload matches CSV", type=["csv"], key="csv_matches")
+    file = st.file_uploader("Upload Matches file", type=["csv", "xlsx", "json"], key="file_matches")
     if file is None:
         return
 
     try:
-        df = pd.read_csv(file)
+        df = _read_file(file)
     except Exception as e:
         st.error(f"Could not read file: {e}")
         return
@@ -126,9 +141,6 @@ def _tab_matches() -> None:
             m_date = parsed_date.date()
 
             # Time resolution — strict validation, no silent fallback
-            raw_time = str(r.get("match_time", "")).strip() if "match_time" in df.columns else ""
-            
-                
             raw_time = _parse_time_flexible(r.get("match_time", ""))
             
             if not raw_time:
@@ -190,28 +202,15 @@ def _tab_teams() -> None:
         optional=[],
     )
 
-    file = st.file_uploader(
-            "Upload Teams file",
-            type=["csv", "xlsx", "json"]
-        )
+    file = st.file_uploader("Upload Teams file", type=["csv", "xlsx", "json"], key="file_teams")
     if file is None:
         return
-    def _read_file(file):
-        name = file.name.lower()
-
-        if name.endswith(".csv"):
-            return pd.read_csv(file)
-
-        elif name.endswith(".xlsx"):
-            return pd.read_excel(file)
-
-        elif name.endswith(".json"):
-            return pd.read_json(file)
-
-        else:
-            raise ValueError("Unsupported file type")
-    df = _read_file(file)
-    
+        
+    try:
+        df = _read_file(file)
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        return
 
     missing = _validate_cols(df, ["event_name", "team_name"])
     if missing:
@@ -236,6 +235,7 @@ def _tab_teams() -> None:
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} team(s).")
 
+# ── Squad Tab ─────────────────────────────────────────────────
 
 # ── Squad Tab ─────────────────────────────────────────────────
 
@@ -245,12 +245,12 @@ def _tab_squad() -> None:
         optional=[],
     )
 
-    file = st.file_uploader("Upload squad CSV", type=["csv"], key="csv_squad")
+    file = st.file_uploader("Upload Squad file", type=["csv", "xlsx", "json"], key="file_squad")
     if file is None:
         return
 
     try:
-        df = pd.read_csv(file)
+        df = _read_file(file)
     except Exception as e:
         st.error(f"Could not read file: {e}")
         return
@@ -278,8 +278,6 @@ def _tab_squad() -> None:
                 warns.append(f"Row {int(i)+1}: {msg}")
         for w in warns: st.warning(w)
         st.success(f"Imported {ok_count} squad record(s).")
-
-
 # ── Render ────────────────────────────────────────────────────
 
 def render() -> None:
