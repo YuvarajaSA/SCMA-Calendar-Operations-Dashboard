@@ -50,11 +50,6 @@ def _parse_time_flexible(val: str) -> str:
                 except Exception:
                     return "00:00"
 
-# ── Shared helpers ────────────────────────────────────────────
-
-
-# ── Matches Tab ───────────────────────────────────────────────
-
 # ── Matches Tab ───────────────────────────────────────────────
 
 def _tab_matches() -> None:
@@ -283,8 +278,8 @@ def _tab_squad() -> None:
 def render() -> None:
     st.markdown("""
     <div class="page-header">
-        <div><h1>CSV UPLOAD</h1>
-        <p>Bulk import matches, teams and squad records</p></div>
+        <div><h1>DATA IMPORT</h1>
+        <p>Bulk import matches, teams and squad records via CSV, Excel, or JSON</p></div>
     </div>""", unsafe_allow_html=True)
 
     if not can_edit():
